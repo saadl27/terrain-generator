@@ -9,6 +9,7 @@ from .mesh_parts_cfg import (
     PlatformMeshPartsCfg,
     HeightMapMeshPartsCfg,
     WallPartsCfg,
+    CornerMeshPartsCfg,
     CapsuleMeshPartsCfg,
     BoxMeshPartsCfg,
 )
@@ -183,6 +184,196 @@ def create_wall_mesh(cfg: WallPartsCfg, **kwargs):
         door = create_door(cfg, cfg.door_direction)
         mesh = trimesh.boolean.difference([mesh, door], engine=ENGINE)
     return mesh
+
+
+def create_corner_mesh(cfg: CornerMeshPartsCfg, **kwargs):
+    incoming_outer_width = cfg.pre_corridor_width + 2.0 * cfg.wall_thickness
+    outgoing_outer_width = cfg.post_corridor_width + 2.0 * cfg.wall_thickness
+    incoming_floor_offset = incoming_outer_width / 2.0
+    outgoing_floor_offset = outgoing_outer_width / 2.0
+    incoming_wall_offset = cfg.pre_corridor_width / 2.0 + cfg.wall_thickness / 2.0
+    outgoing_wall_offset = cfg.post_corridor_width / 2.0 + cfg.wall_thickness / 2.0
+    floor_z = -cfg.dim[2] / 2.0 + cfg.floor_thickness / 2.0 + cfg.height_offset
+    wall_z = -cfg.dim[2] / 2.0 + cfg.wall_height / 2.0 + cfg.height_offset
+
+    def unit(vec):
+        norm = np.linalg.norm(vec)
+        if norm < 1e-8:
+            raise ValueError("Zero-length vector is not allowed.")
+        return vec / norm
+
+    def left_normal(vec):
+        return np.array([-vec[1], vec[0]])
+
+    def cross_2d(a, b):
+        return a[0] * b[1] - a[1] * b[0]
+
+    def line_intersection(point_a, dir_a, point_b, dir_b):
+        denom = cross_2d(dir_a, dir_b)
+        if abs(denom) < 1e-8:
+            raise ValueError("Corner turn angle creates parallel walls.")
+        diff = point_b - point_a
+        scale_a = cross_2d(diff, dir_b) / denom
+        return point_a + scale_a * dir_a
+
+    def create_extruded_polygon(vertices_2d, height, center_z):
+        vertices_2d = np.asarray(vertices_2d, dtype=float)
+
+        signed_area = 0.0
+        for idx in range(len(vertices_2d)):
+            jdx = (idx + 1) % len(vertices_2d)
+            signed_area += (
+                vertices_2d[idx, 0] * vertices_2d[jdx, 1] - vertices_2d[jdx, 0] * vertices_2d[idx, 1]
+            )
+        if signed_area < 0.0:
+            vertices_2d = vertices_2d[::-1]
+
+        def cross_2d_points(a, b, c):
+            ab = b - a
+            ac = c - a
+            return ab[0] * ac[1] - ab[1] * ac[0]
+
+        def point_in_triangle(point, a, b, c):
+            area1 = cross_2d_points(point, a, b)
+            area2 = cross_2d_points(point, b, c)
+            area3 = cross_2d_points(point, c, a)
+            has_neg = (area1 < -1e-9) or (area2 < -1e-9) or (area3 < -1e-9)
+            has_pos = (area1 > 1e-9) or (area2 > 1e-9) or (area3 > 1e-9)
+            return not (has_neg and has_pos)
+
+        def triangulate_polygon(vertices):
+            remaining = list(range(len(vertices)))
+            triangles = []
+
+            while len(remaining) > 3:
+                ear_found = False
+                for idx in range(len(remaining)):
+                    prev_idx = remaining[(idx - 1) % len(remaining)]
+                    curr_idx = remaining[idx]
+                    next_idx = remaining[(idx + 1) % len(remaining)]
+
+                    a = vertices[prev_idx]
+                    b = vertices[curr_idx]
+                    c = vertices[next_idx]
+
+                    if cross_2d_points(a, b, c) <= 1e-9:
+                        continue
+
+                    contains_other_vertex = False
+                    for other_idx in remaining:
+                        if other_idx in (prev_idx, curr_idx, next_idx):
+                            continue
+                        if point_in_triangle(vertices[other_idx], a, b, c):
+                            contains_other_vertex = True
+                            break
+
+                    if contains_other_vertex:
+                        continue
+
+                    triangles.append([prev_idx, curr_idx, next_idx])
+                    del remaining[idx]
+                    ear_found = True
+                    break
+
+                if not ear_found:
+                    raise ValueError("Failed to triangulate corner floor polygon.")
+
+            triangles.append([remaining[0], remaining[1], remaining[2]])
+            return triangles
+
+        bottom_z = center_z - height / 2.0
+        top_z = center_z + height / 2.0
+        bottom = np.column_stack([vertices_2d, np.full(len(vertices_2d), bottom_z)])
+        top = np.column_stack([vertices_2d, np.full(len(vertices_2d), top_z)])
+        vertices = np.vstack([bottom, top])
+
+        top_offset = len(vertices_2d)
+        faces = []
+        top_triangles = triangulate_polygon(vertices_2d)
+        for tri in top_triangles:
+            faces.append([top_offset + tri[0], top_offset + tri[1], top_offset + tri[2]])
+            faces.append([tri[0], tri[2], tri[1]])
+        for idx in range(len(vertices_2d)):
+            jdx = (idx + 1) % len(vertices_2d)
+            faces.append([idx, jdx, top_offset + jdx])
+            faces.append([idx, top_offset + jdx, top_offset + idx])
+
+        return trimesh.Trimesh(vertices=vertices, faces=faces)
+
+    incoming_dir = np.array([0.0, 1.0])
+    outgoing_dir = unit(
+        np.array(
+            [
+                -np.sin(np.deg2rad(cfg.turn_angle_deg)),
+                np.cos(np.deg2rad(cfg.turn_angle_deg)),
+            ]
+        )
+    )
+
+    outer_sign = -1.0 if cfg.turn_angle_deg > 0.0 else 1.0
+    incoming_outer_offset = outer_sign * incoming_floor_offset * left_normal(incoming_dir)
+    outgoing_outer_offset = outer_sign * outgoing_floor_offset * left_normal(outgoing_dir)
+    incoming_inner_offset = -outer_sign * incoming_floor_offset * left_normal(incoming_dir)
+    outgoing_inner_offset = -outer_sign * outgoing_floor_offset * left_normal(outgoing_dir)
+
+    outer_floor_join = line_intersection(incoming_outer_offset, incoming_dir, outgoing_outer_offset, outgoing_dir)
+    inner_floor_join = line_intersection(incoming_inner_offset, incoming_dir, outgoing_inner_offset, outgoing_dir)
+
+    incoming_outer_start = incoming_outer_offset - incoming_dir * cfg.pre_length
+    incoming_inner_start = incoming_inner_offset - incoming_dir * cfg.pre_length
+    outgoing_outer_end = outgoing_outer_offset + outgoing_dir * cfg.post_length
+    outgoing_inner_end = outgoing_inner_offset + outgoing_dir * cfg.post_length
+
+    floor_outline = np.array(
+        [
+            incoming_outer_start,
+            outer_floor_join,
+            outgoing_outer_end,
+            outgoing_inner_end,
+            inner_floor_join,
+            incoming_inner_start,
+        ]
+    )
+    floor_mesh = create_extruded_polygon(floor_outline, cfg.floor_thickness, floor_z)
+
+    meshes = [floor_mesh]
+
+    for side_sign in (-1.0, 1.0):
+        incoming_offset = side_sign * incoming_wall_offset * left_normal(incoming_dir)
+        outgoing_offset = side_sign * outgoing_wall_offset * left_normal(outgoing_dir)
+        incoming_start = incoming_offset - incoming_dir * cfg.pre_length
+        outgoing_end = outgoing_offset + outgoing_dir * cfg.post_length
+
+        half_thickness = cfg.wall_thickness / 2.0
+        incoming_normal = left_normal(incoming_dir)
+        outgoing_normal = left_normal(outgoing_dir)
+        outer_edge_join = line_intersection(
+            incoming_offset + incoming_normal * half_thickness,
+            incoming_dir,
+            outgoing_offset + outgoing_normal * half_thickness,
+            outgoing_dir,
+        )
+        inner_edge_join = line_intersection(
+            incoming_offset - incoming_normal * half_thickness,
+            incoming_dir,
+            outgoing_offset - outgoing_normal * half_thickness,
+            outgoing_dir,
+        )
+
+        wall_outline = np.array(
+            [
+                incoming_start + incoming_normal * half_thickness,
+                outer_edge_join,
+                outgoing_end + outgoing_normal * half_thickness,
+                outgoing_end - outgoing_normal * half_thickness,
+                inner_edge_join,
+                incoming_start - incoming_normal * half_thickness,
+            ]
+        )
+        wall_mesh = create_extruded_polygon(wall_outline, cfg.wall_height, wall_z)
+        meshes.append(wall_mesh)
+
+    return merge_meshes(meshes, cfg.minimal_triangles)
 
 
 def create_platform_mesh(cfg: PlatformMeshPartsCfg, **kwargs):

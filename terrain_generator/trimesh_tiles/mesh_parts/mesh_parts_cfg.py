@@ -57,6 +57,91 @@ class StairMeshPartsCfg(MeshPartsCfg):
 
 
 @dataclass
+class CornerMeshPartsCfg(MeshPartsCfg):
+    pre_length: float = 2.0
+    post_length: float = 2.0
+    corridor_width: float = 1.0
+    pre_corridor_width: Optional[float] = None
+    post_corridor_width: Optional[float] = None
+    turn_angle_deg: float = 90.0  # Positive is a left turn, negative is a right turn.
+    wall_thickness: float = 0.4
+    wall_height: float = 3.0
+
+    def __post_init__(self):
+        self.pre_corridor_width = self.corridor_width if self.pre_corridor_width is None else self.pre_corridor_width
+        self.post_corridor_width = self.corridor_width if self.post_corridor_width is None else self.post_corridor_width
+
+        if self.pre_length <= 0.0:
+            raise ValueError("pre_length must be positive.")
+        if self.post_length <= 0.0:
+            raise ValueError("post_length must be positive.")
+        if self.pre_corridor_width <= 0.0:
+            raise ValueError("pre_corridor_width must be positive.")
+        if self.post_corridor_width <= 0.0:
+            raise ValueError("post_corridor_width must be positive.")
+        if abs(self.turn_angle_deg) < 1e-6:
+            raise ValueError("turn_angle_deg must be non-zero.")
+
+        pre_outer_width = self.pre_corridor_width + 2.0 * self.wall_thickness
+        post_outer_width = self.post_corridor_width + 2.0 * self.wall_thickness
+        angle_rad = np.deg2rad(self.turn_angle_deg)
+        incoming_dir = np.array([0.0, 1.0])
+        outgoing_dir = np.array([-np.sin(angle_rad), np.cos(angle_rad)])
+        outgoing_dir = outgoing_dir / np.linalg.norm(outgoing_dir)
+
+        def left_normal(vec):
+            return np.array([-vec[1], vec[0]])
+
+        def cross_2d(a, b):
+            return a[0] * b[1] - a[1] * b[0]
+
+        def line_intersection(point_a, dir_a, point_b, dir_b):
+            denom = cross_2d(dir_a, dir_b)
+            if abs(denom) < 1e-8:
+                raise ValueError("Corner turn angle creates parallel walls.")
+            diff = point_b - point_a
+            scale_a = cross_2d(diff, dir_b) / denom
+            return point_a + scale_a * dir_a
+
+        outer_sign = -1.0 if self.turn_angle_deg > 0.0 else 1.0
+        incoming_floor_offset = pre_outer_width / 2.0
+        outgoing_floor_offset = post_outer_width / 2.0
+
+        incoming_outer_offset = outer_sign * incoming_floor_offset * left_normal(incoming_dir)
+        outgoing_outer_offset = outer_sign * outgoing_floor_offset * left_normal(outgoing_dir)
+        incoming_inner_offset = -outer_sign * incoming_floor_offset * left_normal(incoming_dir)
+        outgoing_inner_offset = -outer_sign * outgoing_floor_offset * left_normal(outgoing_dir)
+
+        outer_join = line_intersection(incoming_outer_offset, incoming_dir, outgoing_outer_offset, outgoing_dir)
+        inner_join = line_intersection(incoming_inner_offset, incoming_dir, outgoing_inner_offset, outgoing_dir)
+
+        incoming_outer_start = incoming_outer_offset - incoming_dir * self.pre_length
+        incoming_inner_start = incoming_inner_offset - incoming_dir * self.pre_length
+        outgoing_outer_end = outgoing_outer_offset + outgoing_dir * self.post_length
+        outgoing_inner_end = outgoing_inner_offset + outgoing_dir * self.post_length
+
+        all_corners = np.array(
+            [
+                incoming_outer_start,
+                outer_join,
+                outgoing_outer_end,
+                outgoing_inner_end,
+                inner_join,
+                incoming_inner_start,
+            ]
+        )
+
+        half_extent_x = float(np.max(np.abs(all_corners[:, 0])))
+        half_extent_y = float(np.max(np.abs(all_corners[:, 1])))
+        z_dim = max(self.dim[2], self.wall_height)
+        self.dim = (
+            max(self.dim[0], 2.0 * half_extent_x),
+            max(self.dim[1], 2.0 * half_extent_y),
+            z_dim,
+        )
+
+
+@dataclass
 class PlatformMeshPartsCfg(MeshPartsCfg):
     array: np.ndarray = np.zeros((2, 2))
     z_dim_array: np.ndarray = np.zeros((2, 2))

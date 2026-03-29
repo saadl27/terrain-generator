@@ -10,6 +10,7 @@ import functools
 from .indoor_parts import create_stairs_mesh
 from .basic_parts import (
     create_floor,
+    create_corner_mesh,
     create_platform_mesh,
     create_from_height_map,
     create_wall_mesh,
@@ -22,6 +23,7 @@ from .mesh_parts_cfg import (
     WallPartsCfg,
     MeshPattern,
     StairMeshPartsCfg,
+    CornerMeshPartsCfg,
     PlatformMeshPartsCfg,
     HeightMapMeshPartsCfg,
     CapsuleMeshPartsCfg,
@@ -42,6 +44,8 @@ def get_mesh_gen(cfg: MeshPartsCfg) -> Callable:
         mesh_gen = create_wall_mesh
     elif isinstance(cfg, StairMeshPartsCfg):
         mesh_gen = create_stairs_mesh
+    elif isinstance(cfg, CornerMeshPartsCfg):
+        mesh_gen = create_corner_mesh
     elif isinstance(cfg, PlatformMeshPartsCfg):
         mesh_gen = create_platform_mesh
     elif isinstance(cfg, HeightMapMeshPartsCfg):
