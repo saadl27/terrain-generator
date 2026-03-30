@@ -174,7 +174,7 @@ def create_standard_stairs(cfg: StairMeshPartsCfg.Stair):
     n_steps = cfg.n_steps
     step_height = cfg.total_height / n_steps
     step_depth = cfg.step_depth
-    residual_depth = cfg.dim[1] - (n_steps + 1) * step_depth
+    residual_depth = cfg.dim[1] - n_steps * step_depth
     mesh = trimesh.Trimesh()
     stair_start_pos = np.array([0.0, -cfg.dim[1] / 2.0, -cfg.dim[2] / 2.0])
     current_pos = stair_start_pos
@@ -185,14 +185,8 @@ def create_standard_stairs(cfg: StairMeshPartsCfg.Stair):
             pos = current_pos + np.array([0.0, dims[1] / 2.0, dims[2] / 2.0])
             step = trimesh.creation.box(dims, trimesh.transformations.translation_matrix(pos))
             mesh = merge_meshes([mesh, step], cfg.minimal_triangles)
-    for n in range(n_steps + 1):
-        if n == 0:
-            if cfg.height_offset > 0:
-                dims = [cfg.step_width, cfg.step_depth, cfg.height_offset]
-            else:
-                dims = [cfg.step_width, cfg.step_depth, cfg.floor_thickness]
-        else:
-            dims = [cfg.step_width, cfg.step_depth, n * step_height + cfg.height_offset]
+    for n in range(n_steps):
+        dims = [cfg.step_width, cfg.step_depth, (n + 1) * step_height + cfg.height_offset]
         pos = current_pos + np.array([0, dims[1] / 2.0, dims[2] / 2.0])
         step = trimesh.creation.box(dims, trimesh.transformations.translation_matrix(pos))
         current_pos += np.array([0.0, dims[1], 0.0])
