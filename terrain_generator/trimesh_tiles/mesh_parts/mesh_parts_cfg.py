@@ -28,6 +28,9 @@ class WallPartsCfg(MeshPartsCfg):
     wall_thickness: float = 0.4
     wall_height: float = 3.0
     wall_edges: Tuple[str, ...] = ()  # bottom, up, left, right, middle_left, middle_right, middle_up, middle_bottom
+    wall_x_offset: float = 0.0
+    wall_y_offset: float = 0.0
+    wall_z_offset: float = 0.0
     wall_type: str = "wall"  # wall, window, door
     # wall_type_probs: Tuple[float, ...] = (0.6, 0.2, 0.2)  # wall, window, door
     create_door: bool = False
@@ -54,6 +57,37 @@ class StairMeshPartsCfg(MeshPartsCfg):
 
     stairs: Tuple[Stair, ...] = (Stair(),)
     wall: Optional[WallPartsCfg] = None
+
+
+@dataclass
+class SlopeMeshPartsCfg(MeshPartsCfg):
+    corridor_width: float = 1.0
+    slope_length: float = 3.0
+    slope_angle_deg: float = 10.0
+    slope_resolution: int = 24
+    fill_borders: bool = True
+    slope_threshold: float = 4.0
+    simplify: bool = False
+    wall: Optional[WallPartsCfg] = None
+
+    def __post_init__(self):
+        slope_height = np.tan(np.deg2rad(self.slope_angle_deg)) * self.slope_length
+        required_width = self.corridor_width
+        required_height = self.floor_thickness + slope_height
+        if self.wall is not None:
+            required_width = self.corridor_width + 2.0 * self.wall.wall_thickness
+            required_height = max(required_height, self.wall.wall_height)
+        self.dim = (
+            max(self.dim[0], required_width),
+            max(self.dim[1], self.slope_length),
+            max(self.dim[2], required_height),
+        )
+        if self.wall is not None:
+            self.wall.dim = self.dim
+            self.wall.floor_thickness = self.floor_thickness
+            self.wall.height_offset = self.height_offset
+            self.wall.minimal_triangles = self.minimal_triangles
+            self.wall.load_from_cache = self.load_from_cache
 
 
 @dataclass

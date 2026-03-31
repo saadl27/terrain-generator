@@ -9,6 +9,7 @@ from .mesh_parts_cfg import (
     PlatformMeshPartsCfg,
     HeightMapMeshPartsCfg,
     WallPartsCfg,
+    SlopeMeshPartsCfg,
     CornerMeshPartsCfg,
     CapsuleMeshPartsCfg,
     BoxMeshPartsCfg,
@@ -119,6 +120,9 @@ def create_standard_wall(cfg: WallPartsCfg, edge: str = "bottom", **kwargs):
     else:
         raise ValueError(f"Edge {edge} is not defined.")
 
+    pos[0] += cfg.wall_x_offset
+    pos[1] += cfg.wall_y_offset
+    pos[2] += cfg.height_offset + cfg.wall_z_offset
     pose = np.eye(4)
     pose[:3, -1] = pos
     wall = trimesh.creation.box(dim, pose)
@@ -163,6 +167,7 @@ def create_door(cfg: WallPartsCfg, door_direction: str = "up", **kwargs):
     else:
         return trimesh.Trimesh()
 
+    pos[2] += cfg.height_offset
     pose = np.eye(4)
     pose[:3, -1] = pos
     door = trimesh.creation.box(dim, pose)
@@ -184,6 +189,39 @@ def create_wall_mesh(cfg: WallPartsCfg, **kwargs):
         door = create_door(cfg, cfg.door_direction)
         mesh = trimesh.boolean.difference([mesh, door], engine=ENGINE)
     return mesh
+
+
+def create_slope_mesh(cfg: SlopeMeshPartsCfg, **kwargs):
+    slope_height = np.tan(np.deg2rad(cfg.slope_angle_deg)) * cfg.slope_length
+    slope_resolution = max(int(cfg.slope_resolution), 2)
+    square_dim = (cfg.slope_length, cfg.slope_length, cfg.dim[2])
+    sample_positions = np.linspace(0.0, cfg.slope_length, slope_resolution)
+    ramp_profile = cfg.floor_thickness + sample_positions * np.tan(np.deg2rad(cfg.slope_angle_deg))
+    height_map = np.tile(ramp_profile, (slope_resolution, 1))
+
+    slope_surface_cfg = HeightMapMeshPartsCfg(
+        name=f"{cfg.name}_surface",
+        dim=square_dim,
+        floor_thickness=cfg.floor_thickness,
+        minimal_triangles=cfg.minimal_triangles,
+        height_offset=cfg.height_offset,
+        height_map=height_map,
+        fill_borders=cfg.fill_borders,
+        slope_threshold=cfg.slope_threshold,
+        simplify=cfg.simplify,
+        load_from_cache=cfg.load_from_cache,
+    )
+    surface_mesh = create_from_height_map(slope_surface_cfg)
+    width_scale = cfg.dim[0] / cfg.slope_length
+    scale_transform = np.eye(4)
+    scale_transform[0, 0] = width_scale
+    surface_mesh.apply_transform(scale_transform)
+
+    meshes = [surface_mesh]
+    if cfg.wall is not None:
+        for wall_edge in cfg.wall.wall_edges:
+            meshes.append(create_standard_wall(cfg.wall, wall_edge))
+    return merge_meshes(meshes, cfg.minimal_triangles)
 
 
 def create_corner_mesh(cfg: CornerMeshPartsCfg, **kwargs):

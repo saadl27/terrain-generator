@@ -11,6 +11,7 @@ from .indoor_parts import create_stairs_mesh
 from .basic_parts import (
     create_floor,
     create_corner_mesh,
+    create_slope_mesh,
     create_platform_mesh,
     create_from_height_map,
     create_wall_mesh,
@@ -23,6 +24,7 @@ from .mesh_parts_cfg import (
     WallPartsCfg,
     MeshPattern,
     StairMeshPartsCfg,
+    SlopeMeshPartsCfg,
     CornerMeshPartsCfg,
     PlatformMeshPartsCfg,
     HeightMapMeshPartsCfg,
@@ -44,6 +46,8 @@ def get_mesh_gen(cfg: MeshPartsCfg) -> Callable:
         mesh_gen = create_wall_mesh
     elif isinstance(cfg, StairMeshPartsCfg):
         mesh_gen = create_stairs_mesh
+    elif isinstance(cfg, SlopeMeshPartsCfg):
+        mesh_gen = create_slope_mesh
     elif isinstance(cfg, CornerMeshPartsCfg):
         mesh_gen = create_corner_mesh
     elif isinstance(cfg, PlatformMeshPartsCfg):
@@ -73,6 +77,14 @@ def get_mesh_gen(cfg: MeshPartsCfg) -> Callable:
     else:
         raise NotImplementedError(f"Mesh generator for {cfg} not implemented")
     return mesh_gen
+
+
+def build_mesh(cfg_or_mesh):
+    if isinstance(cfg_or_mesh, trimesh.Trimesh):
+        return cfg_or_mesh
+    if isinstance(cfg_or_mesh, MeshPartsCfg):
+        return get_mesh_gen(cfg_or_mesh)(cfg_or_mesh)
+    raise TypeError(f"Unsupported input type: {type(cfg_or_mesh)}")
 
 
 # @ray.remote
