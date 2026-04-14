@@ -122,8 +122,13 @@ def make_platform_cfg(
     wall_z_offset=0.0,
     minimal_triangles=False,
     load_from_cache=False,
+    surface_thickness=None,
 ):
     dim = (width, length, height)
+    use_z_dim_array = surface_thickness is not None
+    z_dim_array = (
+        np.array([[min(max(surface_thickness, 0.0), height)]]) if use_z_dim_array else np.zeros((1, 1))
+    )
     return PlatformMeshPartsCfg(
         name=name,
         dim=dim,
@@ -131,6 +136,8 @@ def make_platform_cfg(
         minimal_triangles=minimal_triangles,
         add_floor=False,
         array=np.array([[height]]),
+        z_dim_array=z_dim_array,
+        use_z_dim_array=use_z_dim_array,
         wall=make_wall_cfg(
             dim=dim,
             floor_thickness=floor_thickness,
@@ -165,6 +172,7 @@ def make_platform_for_stage(
     wall_height=None,
     minimal_triangles=False,
     load_from_cache=False,
+    surface_thickness=None,
 ):
     if isinstance(stage_cfg, StairMeshPartsCfg):
         if len(stage_cfg.stairs) == 0:
@@ -190,6 +198,7 @@ def make_platform_for_stage(
         wall_edges=wall_edges,
         minimal_triangles=minimal_triangles,
         load_from_cache=load_from_cache,
+        surface_thickness=surface_thickness,
     )
 
 
