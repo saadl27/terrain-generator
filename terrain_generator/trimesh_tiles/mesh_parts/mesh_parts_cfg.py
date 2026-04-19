@@ -100,6 +100,7 @@ class CornerMeshPartsCfg(MeshPartsCfg):
     turn_angle_deg: float = 90.0  # Positive is a left turn, negative is a right turn.
     wall_thickness: float = 0.4
     wall_height: float = 3.0
+    cap_ends: bool = True
 
     def __post_init__(self):
         self.pre_corridor_width = self.corridor_width if self.pre_corridor_width is None else self.pre_corridor_width

@@ -254,8 +254,9 @@ def create_corner_mesh(cfg: CornerMeshPartsCfg, **kwargs):
         scale_a = cross_2d(diff, dir_b) / denom
         return point_a + scale_a * dir_a
 
-    def create_extruded_polygon(vertices_2d, height, center_z):
+    def create_extruded_polygon(vertices_2d, height, center_z, skip_side_edges=()):
         vertices_2d = np.asarray(vertices_2d, dtype=float)
+        skip_side_edges = set(skip_side_edges)
 
         signed_area = 0.0
         for idx in range(len(vertices_2d)):
@@ -333,6 +334,8 @@ def create_corner_mesh(cfg: CornerMeshPartsCfg, **kwargs):
             faces.append([tri[0], tri[2], tri[1]])
         for idx in range(len(vertices_2d)):
             jdx = (idx + 1) % len(vertices_2d)
+            if idx in skip_side_edges:
+                continue
             faces.append([idx, jdx, top_offset + jdx])
             faces.append([idx, top_offset + jdx, top_offset + idx])
 
@@ -372,7 +375,13 @@ def create_corner_mesh(cfg: CornerMeshPartsCfg, **kwargs):
             incoming_inner_start,
         ]
     )
-    floor_mesh = create_extruded_polygon(floor_outline, cfg.floor_thickness, floor_z)
+    open_end_edges = (2, 5) if not cfg.cap_ends else ()
+    floor_mesh = create_extruded_polygon(
+        floor_outline,
+        cfg.floor_thickness,
+        floor_z,
+        skip_side_edges=open_end_edges,
+    )
 
     meshes = [floor_mesh]
 
@@ -408,7 +417,12 @@ def create_corner_mesh(cfg: CornerMeshPartsCfg, **kwargs):
                 incoming_start - incoming_normal * half_thickness,
             ]
         )
-        wall_mesh = create_extruded_polygon(wall_outline, cfg.wall_height, wall_z)
+        wall_mesh = create_extruded_polygon(
+            wall_outline,
+            cfg.wall_height,
+            wall_z,
+            skip_side_edges=open_end_edges,
+        )
         meshes.append(wall_mesh)
 
     return merge_meshes(meshes, cfg.minimal_triangles)

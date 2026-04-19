@@ -35,37 +35,43 @@ def main():
         "--min-cell-width",
         type=float,
         default=12.0,
-        help="Minimum width in meters for each subterrain cell inside a level row.",
+        help="Minimum width in meters for each exported subterrain cell.",
     )
     parser.add_argument(
         "--min-cell-length",
         type=float,
         default=12.0,
-        help="Minimum length in meters for each subterrain cell inside a level row.",
+        help="Minimum length in meters for each exported subterrain cell.",
     )
     parser.add_argument(
         "--terrain-padding",
         type=float,
         default=0.0,
-        help="Padding in meters around each terrain inside the merged level rows.",
+        help="Padding in meters around each terrain before it is laid out in the curriculum.",
     )
     parser.add_argument(
         "--divider-wall-height",
         type=float,
         default=1.2,
-        help="Height in meters for the walls delimiting terrains inside a level row.",
+        help="Height in meters for the walls delimiting curriculum cells.",
     )
     parser.add_argument(
         "--divider-wall-thickness",
         type=float,
         default=0.2,
-        help="Thickness in meters for the walls delimiting terrains inside a level row.",
+        help="Thickness in meters for the walls delimiting curriculum cells.",
     )
     parser.add_argument(
         "--row-gap",
         type=float,
         default=1.5,
-        help="Gap in meters between merged level rows in the global all-levels mesh.",
+        help="Gap in meters between consecutive levels inside each subterrain category column.",
+    )
+    parser.add_argument(
+        "--category-gap",
+        type=float,
+        default=2.0,
+        help="Gap in meters between merged subterrain categories in the full curriculum mesh.",
     )
     args = parser.parse_args()
 
@@ -80,6 +86,7 @@ def main():
         divider_wall_height=args.divider_wall_height,
         divider_wall_thickness=args.divider_wall_thickness,
         row_gap=args.row_gap,
+        category_gap=args.category_gap,
     )
     manifest = export_curriculum(
         args.output_dir,
@@ -87,8 +94,9 @@ def main():
         layout_cfg=layout_cfg,
     )
     print(
-        f"Exported {manifest['total_levels']} levels with individual terrain meshes, "
-        f"per-level merged meshes, and the full all-levels mesh to {args.output_dir}"
+        f"Exported {manifest['total_levels']} levels across {manifest['category_count']} subterrain categories, "
+        f"with individual subterrain meshes, per-category curriculum meshes, and the full merged curriculum to "
+        f"{args.output_dir}"
     )
 
 

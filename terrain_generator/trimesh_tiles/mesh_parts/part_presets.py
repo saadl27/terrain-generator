@@ -202,6 +202,58 @@ def make_platform_for_stage(
     )
 
 
+def make_corner_for_stage(
+    stage_cfg,
+    *,
+    name,
+    turn_angle_deg,
+    pre_length=None,
+    post_length=None,
+    floor_thickness=None,
+    wall_thickness=None,
+    wall_height=None,
+    structure_height=None,
+    minimal_triangles=False,
+    load_from_cache=False,
+):
+    if isinstance(stage_cfg, StairMeshPartsCfg):
+        if len(stage_cfg.stairs) == 0:
+            raise ValueError("StairMeshPartsCfg must contain at least one stair.")
+        stage_rise = stage_cfg.stairs[0].total_height
+        corridor_width = stage_cfg.stairs[0].step_width
+    elif isinstance(stage_cfg, SlopeMeshPartsCfg):
+        stage_rise = np.tan(np.deg2rad(stage_cfg.slope_angle_deg)) * stage_cfg.slope_length
+        corridor_width = stage_cfg.corridor_width
+    else:
+        raise ValueError("stage_cfg must be a StairMeshPartsCfg or SlopeMeshPartsCfg.")
+
+    inferred_wall_thickness = (
+        stage_cfg.wall.wall_thickness if getattr(stage_cfg, "wall", None) is not None else 0.12
+    )
+    floor_thickness = stage_cfg.floor_thickness if floor_thickness is None else floor_thickness
+    wall_thickness = inferred_wall_thickness if wall_thickness is None else wall_thickness
+    wall_height = stage_rise if wall_height is None else wall_height
+    structure_height = stage_rise if structure_height is None else structure_height
+    pre_length = stage_cfg.dim[0] / 2.0 if pre_length is None else pre_length
+    post_length = stage_cfg.dim[0] / 2.0 if post_length is None else post_length
+
+    return make_corner_cfg(
+        name=name,
+        corridor_width=corridor_width,
+        pre_corridor_width=corridor_width,
+        post_corridor_width=corridor_width,
+        wall_thickness=wall_thickness,
+        wall_height=wall_height,
+        floor_thickness=floor_thickness,
+        structure_height=structure_height,
+        pre_length=pre_length,
+        post_length=post_length,
+        turn_angle_deg=turn_angle_deg,
+        minimal_triangles=minimal_triangles,
+        load_from_cache=load_from_cache,
+    )
+
+
 def make_slope_cfg(
     name="slope_demo",
     corridor_width=5.0,
@@ -260,6 +312,7 @@ def make_corner_cfg(
     pre_length=2.0,
     post_length=2.0,
     turn_angle_deg=90.0,
+    cap_ends=True,
     minimal_triangles=False,
     load_from_cache=False,
 ):
@@ -278,5 +331,6 @@ def make_corner_cfg(
         turn_angle_deg=turn_angle_deg,
         wall_thickness=wall_thickness,
         wall_height=wall_height,
+        cap_ends=cap_ends,
         load_from_cache=load_from_cache,
     )

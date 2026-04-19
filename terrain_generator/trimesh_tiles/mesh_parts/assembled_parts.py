@@ -10,7 +10,7 @@ import trimesh
 from ...utils import merge_meshes, yaw_rotate_mesh
 from .basic_parts import create_standard_wall
 from .create_tiles import build_mesh
-from .mesh_parts_cfg import MeshPartsCfg, PlatformMeshPartsCfg, SlopeMeshPartsCfg, StairMeshPartsCfg
+from .mesh_parts_cfg import CornerMeshPartsCfg, MeshPartsCfg, PlatformMeshPartsCfg, SlopeMeshPartsCfg, StairMeshPartsCfg
 
 
 SEAM_OVERLAP = 1.0e-3
@@ -47,20 +47,27 @@ def _infer_platform_top_z(part, platform_top_z=None):
         return platform_top_z
     if isinstance(part, PlatformMeshPartsCfg):
         return float(np.max(part.array)) - part.dim[2] / 2.0
-    raise ValueError("platform_top_z must be provided when the platform is not a PlatformMeshPartsCfg.")
+    if isinstance(part, CornerMeshPartsCfg):
+        return -part.dim[2] / 2.0 + part.floor_thickness + part.height_offset
+    raise ValueError(
+        "platform_top_z must be provided when the platform is not a PlatformMeshPartsCfg or CornerMeshPartsCfg."
+    )
 
 
 def _rotate_mesh(mesh, yaw_deg):
     yaw_deg = yaw_deg % 360
-    if yaw_deg == 0:
+    if np.isclose(yaw_deg, 0.0):
         return mesh.copy()
-    if yaw_deg == 90:
+    if np.isclose(yaw_deg, 90.0):
         return yaw_rotate_mesh(mesh, 90)
-    if yaw_deg == 180:
+    if np.isclose(yaw_deg, 180.0):
         return yaw_rotate_mesh(mesh, 180)
-    if yaw_deg == 270:
+    if np.isclose(yaw_deg, 270.0):
         return yaw_rotate_mesh(mesh, 270)
-    raise ValueError(f"Unsupported yaw_deg={yaw_deg}. Only 90-degree turns are supported.")
+    rotated = mesh.copy()
+    rotation = trimesh.transformations.rotation_matrix(np.deg2rad(yaw_deg), [0.0, 0.0, 1.0])
+    rotated.apply_transform(rotation)
+    return rotated
 
 
 def _rotate_point_xy(point_xy, yaw_deg):
@@ -90,9 +97,34 @@ def _final_turn_platform_side_edge(turn_direction):
     raise ValueError("turn_direction must be 'left' or 'right'.")
 
 
-def _build_grounded_wall_mesh(part, yaw_deg, translation_xy, translation_z, ground_z, wall_height):
+def _corner_platform_connection_geometry(part):
+    if not isinstance(part, CornerMeshPartsCfg):
+        raise ValueError("Corner platform geometry requires a CornerMeshPartsCfg.")
+    turn_angle_rad = np.deg2rad(part.turn_angle_deg)
+    outgoing_heading = np.array([-np.sin(turn_angle_rad), np.cos(turn_angle_rad)])
+    outgoing_heading = outgoing_heading / np.linalg.norm(outgoing_heading)
+    incoming_edge_center = np.array([0.0, -part.pre_length])
+    outgoing_edge_center = outgoing_heading * part.post_length
+    return incoming_edge_center, outgoing_edge_center, outgoing_heading
+
+
+def _corner_floor_bottom_z_local(part):
+    return -part.dim[2] / 2.0 + part.height_offset
+
+
+def _corner_cfg_with_wall_height(part, wall_height):
+    cfg = replace(part, wall_height=wall_height, load_from_cache=False)
+    cfg.dim = (part.dim[0], part.dim[1], part.dim[2])
+    return cfg
+
+
+def _wall_height_for_top(support_base_z, wall_top_world_z):
+    return wall_top_world_z - support_base_z
+
+
+def _build_grounded_wall_mesh(part, yaw_deg, translation_xy, translation_z, support_base_z, wall_height):
     wall_cfg = getattr(part, "wall", None)
-    if wall_cfg is None or len(wall_cfg.wall_edges) == 0:
+    if wall_cfg is None or len(wall_cfg.wall_edges) == 0 or wall_height <= 1.0e-6:
         return None
 
     grounded_wall_cfg = replace(
@@ -103,7 +135,7 @@ def _build_grounded_wall_mesh(part, yaw_deg, translation_xy, translation_z, grou
         load_from_cache=part.load_from_cache,
         height_offset=part.height_offset,
         wall_height=wall_height,
-        wall_z_offset=ground_z + part.dim[2] / 2.0 - translation_z - part.height_offset,
+        wall_z_offset=support_base_z + part.dim[2] / 2.0 - translation_z - part.height_offset,
     )
     wall_meshes = [create_standard_wall(grounded_wall_cfg, edge) for edge in grounded_wall_cfg.wall_edges]
     wall_mesh = merge_meshes(wall_meshes, False)
@@ -129,13 +161,13 @@ def _build_extended_grounded_wall_mesh(
     yaw_deg,
     translation_xy,
     translation_z,
-    ground_z,
+    support_base_z,
     wall_height,
     extra_length,
     wall_edges_override=None,
 ):
     wall_cfg = getattr(part, "wall", None)
-    if wall_cfg is None:
+    if wall_cfg is None or wall_height <= 1.0e-6:
         return None
     wall_edges = tuple(wall_edges_override) if wall_edges_override is not None else tuple(wall_cfg.wall_edges)
     if len(wall_edges) == 0:
@@ -151,7 +183,7 @@ def _build_extended_grounded_wall_mesh(
             load_from_cache=part.load_from_cache,
             height_offset=part.height_offset,
             wall_height=wall_height,
-            wall_z_offset=ground_z + part.dim[2] / 2.0 - translation_z - part.height_offset,
+            wall_z_offset=support_base_z + part.dim[2] / 2.0 - translation_z - part.height_offset,
         )
         wall_meshes.append(create_standard_wall(edge_wall_cfg, edge))
 
@@ -166,14 +198,14 @@ def _build_grounded_wall_segment(
     yaw_deg,
     translation_xy,
     translation_z,
-    ground_z,
+    support_base_z,
     wall_height,
     edge,
     segment_span,
     center_offset=0.0,
 ):
     wall_cfg = getattr(part, "wall", None)
-    if wall_cfg is None or segment_span <= 1.0e-6:
+    if wall_cfg is None or segment_span <= 1.0e-6 or wall_height <= 1.0e-6:
         return None
 
     if edge in ("bottom", "up"):
@@ -193,7 +225,7 @@ def _build_grounded_wall_segment(
         load_from_cache=part.load_from_cache,
         height_offset=part.height_offset,
         wall_height=wall_height,
-        wall_z_offset=ground_z + part.dim[2] / 2.0 - translation_z - part.height_offset,
+        wall_z_offset=support_base_z + part.dim[2] / 2.0 - translation_z - part.height_offset,
     )
     wall_mesh = create_standard_wall(segment_wall_cfg, edge)
     wall_mesh.apply_translation(local_offset)
@@ -202,8 +234,8 @@ def _build_grounded_wall_segment(
     return wall_mesh
 
 
-def _build_ground_fill_mesh(part, yaw_deg, translation_xy, bottom_world_z, ground_z):
-    support_height = bottom_world_z - ground_z
+def _build_ground_fill_mesh(part, yaw_deg, translation_xy, bottom_world_z, support_base_z):
+    support_height = bottom_world_z - support_base_z
     if support_height <= 1.0e-6:
         return None
 
@@ -213,7 +245,7 @@ def _build_ground_fill_mesh(part, yaw_deg, translation_xy, bottom_world_z, groun
         [
             translation_xy[0],
             translation_xy[1],
-            ground_z + support_height / 2.0,
+            support_base_z + support_height / 2.0,
         ]
     )
     return support_mesh
@@ -249,6 +281,7 @@ def assemble_linear_sequence(
     local_stage_start_edge_center = np.array([0.0, stage_bounds[0, 1]])
     local_stage_end_edge_center = np.array([0.0, stage_bounds[1, 1]])
     ground_z = stage_bounds[0, 2]
+    wall_top_world_z = ground_z + wall_top_height
     platform_length = platform_bounds[1, 1] - platform_bounds[0, 1]
 
     meshes = []
@@ -262,13 +295,14 @@ def assemble_linear_sequence(
         stage_translation_xy = current_start_edge_center - local_stage_start_edge_center
         stage_mesh.apply_translation([stage_translation_xy[0], stage_translation_xy[1], current_height])
         meshes.append(stage_mesh)
+        stage_support_z = current_height + stage_bounds[0, 2]
         if common_ground:
             support_mesh = _build_ground_fill_mesh(
                 stage,
                 0,
                 stage_translation_xy,
                 current_height + stage_bounds[0, 2],
-                ground_z,
+                stage_support_z,
             )
             if support_mesh is not None:
                 fill_meshes.append(support_mesh)
@@ -278,8 +312,8 @@ def assemble_linear_sequence(
                 0,
                 stage_translation_xy,
                 current_height,
-                ground_z,
-                wall_top_height,
+                stage_support_z,
+                _wall_height_for_top(stage_support_z, wall_top_world_z),
                 grounded_wall_extra_length,
             )
             if wall_mesh is not None:
@@ -292,13 +326,14 @@ def assemble_linear_sequence(
         platform_translation_z = platform_top_world_z - platform_top_z
         platform_mesh.apply_translation([platform_center_world[0], platform_center_world[1], platform_translation_z])
         meshes.append(platform_mesh)
+        platform_support_z = stage_support_z + stage_rise
         if common_ground:
             support_mesh = _build_ground_fill_mesh(
                 platform,
                 0,
                 platform_center_world,
                 platform_translation_z + platform_bounds[0, 2],
-                ground_z,
+                platform_support_z,
             )
             if support_mesh is not None:
                 fill_meshes.append(support_mesh)
@@ -308,8 +343,8 @@ def assemble_linear_sequence(
                 0,
                 platform_center_world,
                 platform_translation_z,
-                ground_z,
-                wall_top_height,
+                platform_support_z,
+                _wall_height_for_top(platform_support_z, wall_top_world_z),
                 grounded_wall_extra_length,
             )
             if wall_mesh is not None:
@@ -320,8 +355,8 @@ def assemble_linear_sequence(
                     0,
                     platform_center_world,
                     platform_translation_z,
-                    ground_z,
-                    wall_top_height,
+                    platform_support_z,
+                    _wall_height_for_top(platform_support_z, wall_top_world_z),
                     0.0,
                     wall_edges_override=("up",),
                 )
@@ -370,6 +405,7 @@ def assemble_rotating_sequence(
     local_stage_start_edge_center = np.array([0.0, stage_bounds[0, 1]])
     local_stage_end_edge_center = np.array([0.0, stage_bounds[1, 1]])
     ground_z = stage_bounds[0, 2]
+    wall_top_world_z = ground_z + wall_top_height
     platform_width = platform_bounds[1, 0] - platform_bounds[0, 0]
     platform_length = platform_bounds[1, 1] - platform_bounds[0, 1]
 
@@ -387,13 +423,14 @@ def assemble_rotating_sequence(
         stage_translation_xy = current_start_edge_center - rotated_stage_start
         stage_mesh.apply_translation([stage_translation_xy[0], stage_translation_xy[1], current_height])
         meshes.append(stage_mesh)
+        stage_support_z = current_height + stage_bounds[0, 2]
         if common_ground:
             support_mesh = _build_ground_fill_mesh(
                 stage,
                 current_yaw_deg,
                 stage_translation_xy,
                 current_height + stage_bounds[0, 2],
-                ground_z,
+                stage_support_z,
             )
             if support_mesh is not None:
                 fill_meshes.append(support_mesh)
@@ -403,8 +440,8 @@ def assemble_rotating_sequence(
                 current_yaw_deg,
                 stage_translation_xy,
                 current_height,
-                ground_z,
-                wall_top_height,
+                stage_support_z,
+                _wall_height_for_top(stage_support_z, wall_top_world_z),
                 grounded_wall_extra_length,
             )
             if wall_mesh is not None:
@@ -417,13 +454,14 @@ def assemble_rotating_sequence(
         platform_translation_z = platform_top_world_z - platform_top_z
         platform_mesh.apply_translation([platform_center_world[0], platform_center_world[1], platform_translation_z])
         meshes.append(platform_mesh)
+        platform_support_z = stage_support_z + stage_rise
         if common_ground:
             support_mesh = _build_ground_fill_mesh(
                 platform,
                 current_yaw_deg,
                 platform_center_world,
                 platform_translation_z + platform_bounds[0, 2],
-                ground_z,
+                platform_support_z,
             )
             if support_mesh is not None:
                 fill_meshes.append(support_mesh)
@@ -433,8 +471,8 @@ def assemble_rotating_sequence(
                 current_yaw_deg,
                 platform_center_world,
                 platform_translation_z,
-                ground_z,
-                wall_top_height,
+                platform_support_z,
+                _wall_height_for_top(platform_support_z, wall_top_world_z),
                 grounded_wall_extra_length,
             )
             if wall_mesh is not None:
@@ -445,8 +483,8 @@ def assemble_rotating_sequence(
                     current_yaw_deg,
                     platform_center_world,
                     platform_translation_z,
-                    ground_z,
-                    wall_top_height,
+                    platform_support_z,
+                    _wall_height_for_top(platform_support_z, wall_top_world_z),
                     grounded_wall_extra_length,
                     wall_edges_override=(_final_turn_platform_side_edge(turn_direction),),
                 )
@@ -458,8 +496,8 @@ def assemble_rotating_sequence(
                     current_yaw_deg,
                     platform_center_world,
                     platform_translation_z,
-                    ground_z,
-                    wall_top_height,
+                    platform_support_z,
+                    _wall_height_for_top(platform_support_z, wall_top_world_z),
                     0.0,
                     wall_edges_override=("up",),
                 )
@@ -473,6 +511,164 @@ def assemble_rotating_sequence(
         current_start_edge_center = platform_center_world + turn_normal * (platform_width / 2.0 - SEAM_OVERLAP)
         current_heading = turn_normal
         current_yaw_deg = (current_yaw_deg + (90 if turn_direction == "left" else 270)) % 360
+        current_height += stage_rise
+
+    return merge_meshes(fill_meshes + meshes + wall_meshes, False)
+
+
+def assemble_angled_sequence(
+    stage,
+    turn_platform,
+    final_platform,
+    num_stages=4,
+    stage_rise=None,
+    turn_platform_top_z=None,
+    final_platform_top_z=None,
+    grounded_side_walls=False,
+    grounded_wall_height=None,
+    grounded_wall_extra_length=0.0,
+    common_ground=False,
+    add_final_end_wall=False,
+):
+    if num_stages < 1:
+        raise ValueError("num_stages must be at least 1.")
+    if not isinstance(turn_platform, CornerMeshPartsCfg):
+        raise ValueError("turn_platform must be a CornerMeshPartsCfg for arbitrary-angle turns.")
+    if abs(turn_platform.turn_angle_deg) <= 1.0e-6:
+        raise ValueError("turn_platform.turn_angle_deg must be non-zero.")
+    if abs(turn_platform.turn_angle_deg) >= 180.0:
+        raise ValueError("For 180-degree switchbacks, use the dedicated U-turn builders.")
+
+    stage_rise = _infer_stage_rise(stage, stage_rise)
+    wall_top_height = grounded_wall_height if grounded_wall_height is not None else num_stages * stage_rise
+
+    stage_for_geometry = _copy_part_without_walls(stage) if grounded_side_walls else stage
+    final_platform_for_geometry = _copy_part_without_walls(final_platform) if grounded_side_walls else final_platform
+
+    base_stage_mesh = _build_mesh(stage_for_geometry)
+    turn_platform_base_mesh = _build_mesh(turn_platform)
+    final_platform_base_mesh = _build_mesh(final_platform_for_geometry)
+    turn_platform_top_z = _infer_platform_top_z(turn_platform, turn_platform_top_z)
+    final_platform_top_z = _infer_platform_top_z(final_platform_for_geometry, final_platform_top_z)
+
+    stage_bounds = base_stage_mesh.bounds
+    final_platform_bounds = final_platform_base_mesh.bounds
+    local_stage_start_edge_center = np.array([0.0, stage_bounds[0, 1]])
+    local_stage_end_edge_center = np.array([0.0, stage_bounds[1, 1]])
+    turn_entry_center, turn_exit_center, turn_outgoing_heading = _corner_platform_connection_geometry(turn_platform)
+
+    ground_z = stage_bounds[0, 2]
+    wall_top_world_z = ground_z + wall_top_height
+    final_platform_length = final_platform_bounds[1, 1] - final_platform_bounds[0, 1]
+
+    meshes = []
+    wall_meshes = []
+    fill_meshes = []
+    current_start_edge_center = local_stage_start_edge_center.copy()
+    current_heading = np.array([0.0, 1.0])
+    current_yaw_deg = 0.0
+    current_height = 0.0
+
+    for stage_idx in range(num_stages):
+        stage_mesh = _rotate_mesh(base_stage_mesh, current_yaw_deg)
+        rotated_stage_start = _rotate_point_xy(local_stage_start_edge_center, current_yaw_deg)
+        stage_translation_xy = current_start_edge_center - rotated_stage_start
+        stage_mesh.apply_translation([stage_translation_xy[0], stage_translation_xy[1], current_height])
+        meshes.append(stage_mesh)
+
+        stage_support_z = current_height + stage_bounds[0, 2]
+        if common_ground:
+            support_mesh = _build_ground_fill_mesh(
+                stage,
+                current_yaw_deg,
+                stage_translation_xy,
+                current_height + stage_bounds[0, 2],
+                stage_support_z,
+            )
+            if support_mesh is not None:
+                fill_meshes.append(support_mesh)
+        if grounded_side_walls:
+            wall_mesh = _build_extended_grounded_wall_mesh(
+                stage,
+                current_yaw_deg,
+                stage_translation_xy,
+                current_height,
+                stage_support_z,
+                _wall_height_for_top(stage_support_z, wall_top_world_z),
+                grounded_wall_extra_length,
+            )
+            if wall_mesh is not None:
+                wall_meshes.append(wall_mesh)
+
+        stage_end_world = _rotate_point_xy(local_stage_end_edge_center, current_yaw_deg) + stage_translation_xy
+
+        if stage_idx == num_stages - 1:
+            final_platform_center_world = stage_end_world + current_heading * (final_platform_length / 2.0 - SEAM_OVERLAP)
+            final_platform_mesh = _rotate_mesh(final_platform_base_mesh, current_yaw_deg)
+            final_platform_translation_z = stage_mesh.bounds[1, 2] - final_platform_top_z
+            final_platform_mesh.apply_translation(
+                [final_platform_center_world[0], final_platform_center_world[1], final_platform_translation_z]
+            )
+            meshes.append(final_platform_mesh)
+
+            final_platform_support_z = stage_support_z + stage_rise
+            if common_ground:
+                support_mesh = _build_ground_fill_mesh(
+                    final_platform,
+                    current_yaw_deg,
+                    final_platform_center_world,
+                    final_platform_translation_z + final_platform_bounds[0, 2],
+                    final_platform_support_z,
+                )
+                if support_mesh is not None:
+                    fill_meshes.append(support_mesh)
+            if grounded_side_walls:
+                wall_mesh = _build_extended_grounded_wall_mesh(
+                    final_platform,
+                    current_yaw_deg,
+                    final_platform_center_world,
+                    final_platform_translation_z,
+                    final_platform_support_z,
+                    _wall_height_for_top(final_platform_support_z, wall_top_world_z),
+                    grounded_wall_extra_length,
+                )
+                if wall_mesh is not None:
+                    wall_meshes.append(wall_mesh)
+                if add_final_end_wall:
+                    end_wall_mesh = _build_extended_grounded_wall_mesh(
+                        final_platform,
+                        current_yaw_deg,
+                        final_platform_center_world,
+                        final_platform_translation_z,
+                        final_platform_support_z,
+                        _wall_height_for_top(final_platform_support_z, wall_top_world_z),
+                        0.0,
+                        wall_edges_override=("up",),
+                    )
+                    if end_wall_mesh is not None:
+                        wall_meshes.append(end_wall_mesh)
+            continue
+
+        rotated_turn_entry = _rotate_point_xy(turn_entry_center, current_yaw_deg)
+        turn_platform_translation_xy = stage_end_world - rotated_turn_entry
+        turn_platform_translation_z = stage_mesh.bounds[1, 2] - turn_platform_top_z
+
+        if grounded_side_walls:
+            turn_platform_floor_bottom_world_z = turn_platform_translation_z + _corner_floor_bottom_z_local(turn_platform)
+            turn_platform_wall_height = max(wall_top_world_z - turn_platform_floor_bottom_world_z, 0.0)
+            turn_platform_mesh = _build_mesh(_corner_cfg_with_wall_height(turn_platform, turn_platform_wall_height))
+        else:
+            turn_platform_mesh = turn_platform_base_mesh.copy()
+
+        turn_platform_mesh = _rotate_mesh(turn_platform_mesh, current_yaw_deg)
+        turn_platform_mesh.apply_translation(
+            [turn_platform_translation_xy[0], turn_platform_translation_xy[1], turn_platform_translation_z]
+        )
+        meshes.append(turn_platform_mesh)
+
+        current_start_edge_center = _rotate_point_xy(turn_exit_center, current_yaw_deg) + turn_platform_translation_xy
+        current_heading = _rotate_point_xy(turn_outgoing_heading, current_yaw_deg)
+        current_yaw_deg += turn_platform.turn_angle_deg
         current_height += stage_rise
 
     return merge_meshes(fill_meshes + meshes + wall_meshes, False)
@@ -527,6 +723,7 @@ def assemble_u_turn_sequence(
     return_end_edge_center = _rotate_point_xy(np.array([0.0, return_bounds[1, 1]]), return_stage_yaw_deg)
 
     ground_z = outbound_bounds[0, 2]
+    wall_top_world_z = ground_z + wall_top_height
     outbound_stage_width = outbound_bounds[1, 0] - outbound_bounds[0, 0]
     turn_platform_width = turn_platform_bounds[1, 0] - turn_platform_bounds[0, 0]
     turn_platform_length = turn_platform_bounds[1, 1] - turn_platform_bounds[0, 1]
@@ -543,13 +740,14 @@ def assemble_u_turn_sequence(
     outbound_mesh = outbound_base_mesh.copy()
     outbound_mesh.apply_translation([outbound_translation_xy[0], outbound_translation_xy[1], 0.0])
     meshes.append(outbound_mesh)
+    outbound_support_z = outbound_bounds[0, 2]
     if common_ground:
         support_mesh = _build_ground_fill_mesh(
             outbound_stage,
             0,
             outbound_translation_xy,
             outbound_bounds[0, 2],
-            ground_z,
+            outbound_support_z,
         )
         if support_mesh is not None:
             fill_meshes.append(support_mesh)
@@ -559,8 +757,8 @@ def assemble_u_turn_sequence(
             0,
             outbound_translation_xy,
             0.0,
-            ground_z,
-            wall_top_height,
+            outbound_support_z,
+            _wall_height_for_top(outbound_support_z, wall_top_world_z),
             grounded_wall_extra_length,
         )
         if wall_mesh is not None:
@@ -579,13 +777,14 @@ def assemble_u_turn_sequence(
         [turn_platform_center_world[0], turn_platform_center_world[1], turn_platform_translation_z]
     )
     meshes.append(turn_platform_mesh)
+    turn_platform_support_z = outbound_support_z + stage_rise
     if common_ground:
         support_mesh = _build_ground_fill_mesh(
             turn_platform,
             0,
             turn_platform_center_world,
             turn_platform_translation_z + turn_platform_bounds[0, 2],
-            ground_z,
+            turn_platform_support_z,
         )
         if support_mesh is not None:
             fill_meshes.append(support_mesh)
@@ -595,8 +794,8 @@ def assemble_u_turn_sequence(
             0,
             turn_platform_center_world,
             turn_platform_translation_z,
-            ground_z,
-            wall_top_height,
+            turn_platform_support_z,
+            _wall_height_for_top(turn_platform_support_z, wall_top_world_z),
             grounded_wall_extra_length,
         )
         if wall_mesh is not None:
@@ -607,8 +806,8 @@ def assemble_u_turn_sequence(
                 0,
                 turn_platform_center_world,
                 turn_platform_translation_z,
-                ground_z,
-                wall_top_height,
+                turn_platform_support_z,
+                _wall_height_for_top(turn_platform_support_z, wall_top_world_z),
                 0.0,
                 wall_edges_override=("up",),
             )
@@ -649,21 +848,22 @@ def assemble_u_turn_sequence(
                 0,
                 turn_platform_center_world,
                 turn_platform_translation_z,
-                ground_z,
-                wall_top_height,
+                turn_platform_support_z,
+                _wall_height_for_top(turn_platform_support_z, wall_top_world_z),
                 edge="bottom",
                 segment_span=gap_width,
                 center_offset=gap_center_offset,
             )
             if gap_wall_mesh is not None:
                 wall_meshes.append(gap_wall_mesh)
+    return_support_z = stage_rise + return_bounds[0, 2]
     if common_ground:
         support_mesh = _build_ground_fill_mesh(
             return_stage,
             return_stage_yaw_deg,
             return_translation_xy,
             stage_rise + return_bounds[0, 2],
-            ground_z,
+            return_support_z,
         )
         if support_mesh is not None:
             fill_meshes.append(support_mesh)
@@ -673,8 +873,8 @@ def assemble_u_turn_sequence(
             return_stage_yaw_deg,
             return_translation_xy,
             stage_rise,
-            ground_z,
-            wall_top_height,
+            return_support_z,
+            _wall_height_for_top(return_support_z, wall_top_world_z),
             grounded_wall_extra_length,
         )
         if wall_mesh is not None:
@@ -688,13 +888,14 @@ def assemble_u_turn_sequence(
         [final_platform_center_world[0], final_platform_center_world[1], final_platform_translation_z]
     )
     meshes.append(final_platform_mesh)
+    final_platform_support_z = return_support_z + stage_rise
     if common_ground:
         support_mesh = _build_ground_fill_mesh(
             final_platform,
             return_stage_yaw_deg,
             final_platform_center_world,
             final_platform_translation_z + final_platform_bounds[0, 2],
-            ground_z,
+            final_platform_support_z,
         )
         if support_mesh is not None:
             fill_meshes.append(support_mesh)
@@ -704,8 +905,8 @@ def assemble_u_turn_sequence(
             return_stage_yaw_deg,
             final_platform_center_world,
             final_platform_translation_z,
-            ground_z,
-            wall_top_height,
+            final_platform_support_z,
+            _wall_height_for_top(final_platform_support_z, wall_top_world_z),
             grounded_wall_extra_length,
         )
         if wall_mesh is not None:
@@ -716,8 +917,8 @@ def assemble_u_turn_sequence(
                 return_stage_yaw_deg,
                 final_platform_center_world,
                 final_platform_translation_z,
-                ground_z,
-                wall_top_height,
+                final_platform_support_z,
+                _wall_height_for_top(final_platform_support_z, wall_top_world_z),
                 0.0,
                 wall_edges_override=("up",),
             )
@@ -783,6 +984,7 @@ def assemble_repeating_u_turn_sequence(
     turn_platform_length = turn_platform_bounds[1, 1] - turn_platform_bounds[0, 1]
     final_platform_length = final_platform_bounds[1, 1] - final_platform_bounds[0, 1]
     ground_z = outbound_bounds[0, 2]
+    wall_top_world_z = ground_z + wall_top_height
 
     meshes = []
     wall_meshes = []
@@ -800,6 +1002,7 @@ def assemble_repeating_u_turn_sequence(
     last_stage_translation_xy = None
     last_stage_end_world = None
     last_heading = None
+    last_stage_support_z = None
 
     for stage_idx in range(num_stages):
         if current_is_outbound:
@@ -822,6 +1025,7 @@ def assemble_repeating_u_turn_sequence(
         stage_translation_xy = current_stage_start_world - rotated_stage_start
         stage_mesh.apply_translation([stage_translation_xy[0], stage_translation_xy[1], current_height])
         meshes.append(stage_mesh)
+        stage_support_z = current_height + stage_bounds[0, 2]
 
         if common_ground:
             support_mesh = _build_ground_fill_mesh(
@@ -829,7 +1033,7 @@ def assemble_repeating_u_turn_sequence(
                 current_yaw_deg,
                 stage_translation_xy,
                 current_height + stage_bounds[0, 2],
-                ground_z,
+                stage_support_z,
             )
             if support_mesh is not None:
                 fill_meshes.append(support_mesh)
@@ -839,8 +1043,8 @@ def assemble_repeating_u_turn_sequence(
                 current_yaw_deg,
                 stage_translation_xy,
                 current_height,
-                ground_z,
-                wall_top_height,
+                stage_support_z,
+                _wall_height_for_top(stage_support_z, wall_top_world_z),
                 grounded_wall_extra_length,
             )
             if wall_mesh is not None:
@@ -855,6 +1059,7 @@ def assemble_repeating_u_turn_sequence(
         last_stage_translation_xy = stage_translation_xy
         last_stage_end_world = current_stage_end_world
         last_heading = current_heading
+        last_stage_support_z = stage_support_z
 
         if stage_idx == num_stages - 1:
             continue
@@ -876,6 +1081,7 @@ def assemble_repeating_u_turn_sequence(
             [turn_platform_center_world[0], turn_platform_center_world[1], turn_platform_translation_z]
         )
         meshes.append(turn_platform_mesh)
+        turn_platform_support_z = stage_support_z + stage_rise
 
         if common_ground:
             support_mesh = _build_ground_fill_mesh(
@@ -883,7 +1089,7 @@ def assemble_repeating_u_turn_sequence(
                 current_yaw_deg,
                 turn_platform_center_world,
                 turn_platform_translation_z + turn_platform_bounds[0, 2],
-                ground_z,
+                turn_platform_support_z,
             )
             if support_mesh is not None:
                 fill_meshes.append(support_mesh)
@@ -893,8 +1099,8 @@ def assemble_repeating_u_turn_sequence(
                 current_yaw_deg,
                 turn_platform_center_world,
                 turn_platform_translation_z,
-                ground_z,
-                wall_top_height,
+                turn_platform_support_z,
+                _wall_height_for_top(turn_platform_support_z, wall_top_world_z),
                 grounded_wall_extra_length,
             )
             if wall_mesh is not None:
@@ -905,8 +1111,8 @@ def assemble_repeating_u_turn_sequence(
                     current_yaw_deg,
                     turn_platform_center_world,
                     turn_platform_translation_z,
-                    ground_z,
-                    wall_top_height,
+                    turn_platform_support_z,
+                    _wall_height_for_top(turn_platform_support_z, wall_top_world_z),
                     0.0,
                     wall_edges_override=("up",),
                 )
@@ -934,8 +1140,8 @@ def assemble_repeating_u_turn_sequence(
                     current_yaw_deg,
                     turn_platform_center_world,
                     turn_platform_translation_z,
-                    ground_z,
-                    wall_top_height,
+                    turn_platform_support_z,
+                    _wall_height_for_top(turn_platform_support_z, wall_top_world_z),
                     edge="bottom",
                     segment_span=gap_width,
                     center_offset=gap_center_offset,
@@ -955,6 +1161,7 @@ def assemble_repeating_u_turn_sequence(
         [final_platform_center_world[0], final_platform_center_world[1], final_platform_translation_z]
     )
     meshes.append(final_platform_mesh)
+    final_platform_support_z = last_stage_support_z + stage_rise
 
     if common_ground:
         support_mesh = _build_ground_fill_mesh(
@@ -962,7 +1169,7 @@ def assemble_repeating_u_turn_sequence(
             current_yaw_deg,
             final_platform_center_world,
             final_platform_translation_z + final_platform_bounds[0, 2],
-            ground_z,
+            final_platform_support_z,
         )
         if support_mesh is not None:
             fill_meshes.append(support_mesh)
@@ -972,8 +1179,8 @@ def assemble_repeating_u_turn_sequence(
             current_yaw_deg,
             final_platform_center_world,
             final_platform_translation_z,
-            ground_z,
-            wall_top_height,
+            final_platform_support_z,
+            _wall_height_for_top(final_platform_support_z, wall_top_world_z),
             grounded_wall_extra_length,
         )
         if wall_mesh is not None:
@@ -984,8 +1191,8 @@ def assemble_repeating_u_turn_sequence(
                 current_yaw_deg,
                 final_platform_center_world,
                 final_platform_translation_z,
-                ground_z,
-                wall_top_height,
+                final_platform_support_z,
+                _wall_height_for_top(final_platform_support_z, wall_top_world_z),
                 0.0,
                 wall_edges_override=("up",),
             )
@@ -1076,6 +1283,30 @@ def make_stairs_turn_90_mesh(
         platform,
         num_stages=2,
         turn_direction="left",
+        grounded_side_walls=grounded_side_walls,
+        grounded_wall_height=grounded_wall_height,
+        grounded_wall_extra_length=grounded_wall_extra_length,
+        common_ground=common_ground,
+        add_final_end_wall=add_final_end_wall,
+    )
+
+
+def make_angled_stairs_mesh(
+    stairs,
+    turn_platform,
+    final_platform,
+    num_stages=4,
+    grounded_side_walls=False,
+    grounded_wall_height=None,
+    grounded_wall_extra_length=0.0,
+    common_ground=False,
+    add_final_end_wall=False,
+):
+    return assemble_angled_sequence(
+        stairs,
+        turn_platform,
+        final_platform,
+        num_stages=num_stages,
         grounded_side_walls=grounded_side_walls,
         grounded_wall_height=grounded_wall_height,
         grounded_wall_extra_length=grounded_wall_extra_length,
@@ -1196,6 +1427,30 @@ def make_slopes_turn_90_mesh(
         grounded_wall_height=grounded_wall_height,
         grounded_wall_extra_length=grounded_wall_extra_length,
         common_ground=common_ground,
+    )
+
+
+def make_angled_slopes_mesh(
+    slope,
+    turn_platform,
+    final_platform,
+    num_stages=4,
+    grounded_side_walls=False,
+    grounded_wall_height=None,
+    grounded_wall_extra_length=0.0,
+    common_ground=False,
+    add_final_end_wall=False,
+):
+    return assemble_angled_sequence(
+        slope,
+        turn_platform,
+        final_platform,
+        num_stages=num_stages,
+        grounded_side_walls=grounded_side_walls,
+        grounded_wall_height=grounded_wall_height,
+        grounded_wall_extra_length=grounded_wall_extra_length,
+        common_ground=common_ground,
+        add_final_end_wall=add_final_end_wall,
     )
 
 
