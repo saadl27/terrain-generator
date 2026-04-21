@@ -301,8 +301,21 @@ def build_curriculum_categories(
 
     curriculum_categories = []
     for category_id in CATEGORY_ORDER:
+        category_level_lengths = dict(level_lengths)
+        if category_id == "corner":
+            for level in level_numbers:
+                raw_extents = raw_terrain_map[level][category_id].metadata["mesh_extents"]
+                category_level_lengths[level] = max(
+                    layout_cfg.min_cell_length,
+                    category_widths[category_id],
+                    float(raw_extents["y"]) + 2.0 * layout_cfg.terrain_padding_y,
+                )
         expanded_terrains = tuple(
-            expand_terrain_to_cell(raw_terrain_map[level][category_id], category_widths[category_id], level_lengths[level])
+            expand_terrain_to_cell(
+                raw_terrain_map[level][category_id],
+                category_widths[category_id],
+                category_level_lengths[level],
+            )
             for level in level_numbers
         )
         category_mesh, category_layout = _assemble_category_mesh(
@@ -310,7 +323,7 @@ def build_curriculum_categories(
             expanded_terrains,
             level_numbers,
             category_widths[category_id],
-            level_lengths,
+            category_level_lengths,
             layout_cfg,
         )
         curriculum_categories.append(

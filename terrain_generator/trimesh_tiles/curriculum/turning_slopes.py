@@ -36,6 +36,7 @@ def _level_params(level: int):
         "slope_length": lerp(3.6, 6.84, t),
         "slope_angle_deg": lerp(10.0, 31.6, t),
         "corridor_width": lerp(3.4, 2.5, t),
+        "entry_length": lerp(2.8, 1.6, t),
         "turn_angle_deg": turn_angle_deg,
         "num_segments": 3 if abs(turn_angle_deg - 90.0) <= 1.0e-6 else 2,
     }
@@ -71,6 +72,8 @@ def build_category_terrain(level: int) -> TerrainScene:
             grounded_wall_height=grounded_wall_height,
             common_ground=common_ground,
             add_final_end_wall=ADD_FINAL_LINEAR_SLOPE_END_WALL,
+            entry_length=float(params["entry_length"]),
+            entry_wall_height=float(slope_cfg.wall.wall_height),
         )
         terrain_type = "turning_slopes"
         pattern = "slope -> flat platform -> slope -> final platform"
@@ -88,6 +91,8 @@ def build_category_terrain(level: int) -> TerrainScene:
             grounded_wall_height=grounded_wall_height,
             common_ground=U_TURN_COMMON_GROUND,
             add_final_end_wall=ADD_FINAL_LINEAR_SLOPE_END_WALL,
+            entry_length=float(params["entry_length"]),
+            entry_wall_height=float(slope_cfg.wall.wall_height),
         )
         terrain_type = "u_turn_slopes"
         pattern = "slope -> U-turn landing -> slope -> final platform"
@@ -112,6 +117,8 @@ def build_category_terrain(level: int) -> TerrainScene:
             grounded_side_walls=USE_GROUNDED_SIDE_WALLS,
             grounded_wall_height=grounded_wall_height,
             common_ground=common_ground,
+            entry_length=float(params["entry_length"]),
+            entry_wall_height=float(slope_cfg.wall.wall_height),
         )
         terrain_type = "turning_slopes"
         pattern = "slope -> 90-degree turn platform -> slope -> final platform"
@@ -137,12 +144,13 @@ def build_category_terrain(level: int) -> TerrainScene:
             grounded_wall_height=grounded_wall_height,
             common_ground=common_ground,
             add_final_end_wall=ADD_FINAL_LINEAR_SLOPE_END_WALL,
+            entry_length=float(params["entry_length"]),
+            entry_wall_height=float(slope_cfg.wall.wall_height),
         )
         terrain_type = "turning_slopes"
         pattern = "slope -> angled turn platform -> slope -> final platform"
         turn_pattern = "turning"
         label = f"Level {level} rotating slopes"
-
     mesh, base_dim = merge_feature_with_flat_base(feature_mesh)
     return TerrainScene(
         terrain_id="turning_slopes",
@@ -152,12 +160,13 @@ def build_category_terrain(level: int) -> TerrainScene:
             "terrain_id": "turning_slopes",
             "label": label,
             "type": terrain_type,
-            "pattern": pattern,
+            "pattern": f"entry corridor -> {pattern}",
             "num_segments": int(params["num_segments"]),
             "slope_length": round_float(params["slope_length"]),
             "slope_angle_deg": round_float(params["slope_angle_deg"]),
             "corridor_width": round_float(effective_width),
             "nominal_corridor_width": round_float(params["corridor_width"]),
+            "entry_corridor_length": round_float(params["entry_length"]),
             "turn_direction": turn_direction,
             "turn_angle_deg": round_float(abs_turn_angle_deg),
             "turn_pattern": turn_pattern,

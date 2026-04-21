@@ -26,6 +26,7 @@ def _level_params(level: int):
         "slope_angle_deg": lerp(5.0, 28.0, t),
         "corridor_width": lerp(4.0, 2.6, t),
         "flat_length": lerp(2.0, 1.3, t),
+        "entry_length": lerp(2.8, 1.6, t),
         "num_segments": 3,
     }
 
@@ -66,6 +67,8 @@ def build_category_terrain(level: int) -> TerrainScene:
         grounded_wall_height=grounded_wall_height,
         common_ground=USE_COMMON_GROUND,
         add_final_end_wall=ADD_FINAL_LINEAR_SLOPE_END_WALL,
+        entry_length=float(params["entry_length"]),
+        entry_wall_height=float(slope_cfg.wall.wall_height),
     )
     mesh, base_dim = merge_feature_with_flat_base(feature_mesh)
     return TerrainScene(
@@ -76,12 +79,13 @@ def build_category_terrain(level: int) -> TerrainScene:
             "terrain_id": "linear_slopes",
             "label": f"Level {level} linear slopes",
             "type": "linear_slopes",
-            "pattern": "slope -> platform -> slope -> platform -> slope -> platform",
+            "pattern": "entry corridor -> slope -> platform -> slope -> platform -> slope -> platform",
             "num_segments": int(params["num_segments"]),
             "slope_length": round_float(params["slope_length"]),
             "slope_angle_deg": round_float(params["slope_angle_deg"]),
             "corridor_width": round_float(effective_width),
             "nominal_corridor_width": round_float(params["corridor_width"]),
+            "entry_corridor_length": round_float(params["entry_length"]),
             "flat_length_between_segments": round_float(params["flat_length"]),
             "grounded_side_walls": USE_GROUNDED_SIDE_WALLS,
             "common_ground": USE_COMMON_GROUND,

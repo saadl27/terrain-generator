@@ -251,6 +251,39 @@ def _build_ground_fill_mesh(part, yaw_deg, translation_xy, bottom_world_z, suppo
     return support_mesh
 
 
+def _build_entry_corridor_meshes(part, yaw_deg, start_edge_center_world, floor_base_z, entry_length, wall_height=None):
+    if entry_length <= 1.0e-6:
+        return []
+
+    wall_cfg = getattr(part, "wall", None)
+    wall_thickness = wall_cfg.wall_thickness if wall_cfg is not None else 0.12
+    entry_wall_height = wall_height if wall_height is not None else (wall_cfg.wall_height if wall_cfg is not None else 0.0)
+
+    corridor_center_world = start_edge_center_world - _rotate_point_xy(
+        np.array([0.0, entry_length / 2.0 - SEAM_OVERLAP]), yaw_deg
+    )
+
+    meshes = []
+
+    floor_mesh = trimesh.creation.box((part.dim[0], entry_length, part.floor_thickness))
+    floor_mesh = _rotate_mesh(floor_mesh, yaw_deg)
+    floor_mesh.apply_translation(
+        [corridor_center_world[0], corridor_center_world[1], floor_base_z + part.floor_thickness / 2.0]
+    )
+    meshes.append(floor_mesh)
+
+    if entry_wall_height > 1.0e-6:
+        wall_offset_x = max(0.0, part.dim[0] / 2.0 - wall_thickness / 2.0)
+        for sign in (-1.0, 1.0):
+            wall_mesh = trimesh.creation.box((wall_thickness, entry_length, entry_wall_height))
+            wall_mesh.apply_translation([sign * wall_offset_x, 0.0, floor_base_z + entry_wall_height / 2.0])
+            wall_mesh = _rotate_mesh(wall_mesh, yaw_deg)
+            wall_mesh.apply_translation([corridor_center_world[0], corridor_center_world[1], 0.0])
+            meshes.append(wall_mesh)
+
+    return meshes
+
+
 def assemble_linear_sequence(
     stage,
     platform,
@@ -262,6 +295,8 @@ def assemble_linear_sequence(
     grounded_wall_extra_length=0.0,
     common_ground=False,
     add_final_end_wall=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     if num_stages < 1:
         raise ValueError("num_stages must be at least 1.")
@@ -289,6 +324,17 @@ def assemble_linear_sequence(
     fill_meshes = []
     current_start_edge_center = local_stage_start_edge_center.copy()
     current_height = 0.0
+
+    meshes.extend(
+        _build_entry_corridor_meshes(
+            stage,
+            0,
+            current_start_edge_center,
+            ground_z,
+            entry_length,
+            wall_height=entry_wall_height,
+        )
+    )
 
     for stage_idx in range(num_stages):
         stage_mesh = base_stage_mesh.copy()
@@ -384,6 +430,8 @@ def assemble_rotating_sequence(
     grounded_wall_extra_length=0.0,
     common_ground=False,
     add_final_end_wall=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     if num_stages < 1:
         raise ValueError("num_stages must be at least 1.")
@@ -416,6 +464,17 @@ def assemble_rotating_sequence(
     current_heading = np.array([0.0, 1.0])
     current_yaw_deg = 0
     current_height = 0.0
+
+    meshes.extend(
+        _build_entry_corridor_meshes(
+            stage,
+            current_yaw_deg,
+            current_start_edge_center,
+            ground_z,
+            entry_length,
+            wall_height=entry_wall_height,
+        )
+    )
 
     for stage_idx in range(num_stages):
         stage_mesh = _rotate_mesh(base_stage_mesh, current_yaw_deg)
@@ -529,6 +588,8 @@ def assemble_angled_sequence(
     grounded_wall_extra_length=0.0,
     common_ground=False,
     add_final_end_wall=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     if num_stages < 1:
         raise ValueError("num_stages must be at least 1.")
@@ -568,6 +629,17 @@ def assemble_angled_sequence(
     current_heading = np.array([0.0, 1.0])
     current_yaw_deg = 0.0
     current_height = 0.0
+
+    meshes.extend(
+        _build_entry_corridor_meshes(
+            stage,
+            current_yaw_deg,
+            current_start_edge_center,
+            ground_z,
+            entry_length,
+            wall_height=entry_wall_height,
+        )
+    )
 
     for stage_idx in range(num_stages):
         stage_mesh = _rotate_mesh(base_stage_mesh, current_yaw_deg)
@@ -691,6 +763,8 @@ def assemble_u_turn_sequence(
     add_final_end_wall=False,
     add_turn_platform_end_wall=True,
     add_turn_gap_wall=True,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     if return_side not in ("left", "right"):
         raise ValueError("return_side must be 'left' or 'right'.")
@@ -737,6 +811,16 @@ def assemble_u_turn_sequence(
     fill_meshes = []
 
     outbound_translation_xy = np.zeros(2)
+    meshes.extend(
+        _build_entry_corridor_meshes(
+            outbound_stage,
+            0,
+            outbound_start_edge_center,
+            ground_z,
+            entry_length,
+            wall_height=entry_wall_height,
+        )
+    )
     outbound_mesh = outbound_base_mesh.copy()
     outbound_mesh.apply_translation([outbound_translation_xy[0], outbound_translation_xy[1], 0.0])
     meshes.append(outbound_mesh)
@@ -945,6 +1029,8 @@ def assemble_repeating_u_turn_sequence(
     add_final_end_wall=False,
     add_turn_platform_end_wall=True,
     add_turn_gap_wall=True,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     if num_stages < 1:
         raise ValueError("num_stages must be at least 1.")
@@ -995,6 +1081,17 @@ def assemble_repeating_u_turn_sequence(
     current_height = 0.0
     current_is_outbound = True
     side_sign = -1.0 if return_side == "left" else 1.0
+
+    meshes.extend(
+        _build_entry_corridor_meshes(
+            outbound_stage,
+            current_yaw_deg,
+            current_stage_start_world,
+            ground_z,
+            entry_length,
+            wall_height=entry_wall_height,
+        )
+    )
 
     last_stage_mesh = None
     last_stage_cfg = None
@@ -1211,6 +1308,8 @@ def make_linear_stairs_mesh(
     grounded_wall_extra_length=0.0,
     common_ground=False,
     add_final_end_wall=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return assemble_linear_sequence(
         stairs,
@@ -1221,6 +1320,8 @@ def make_linear_stairs_mesh(
         grounded_wall_extra_length=grounded_wall_extra_length,
         common_ground=common_ground,
         add_final_end_wall=add_final_end_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1232,6 +1333,8 @@ def make_stairs_platform_stairs_mesh(
     grounded_wall_extra_length=0.0,
     common_ground=False,
     add_final_end_wall=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return make_linear_stairs_mesh(
         stairs,
@@ -1242,6 +1345,8 @@ def make_stairs_platform_stairs_mesh(
         grounded_wall_extra_length=grounded_wall_extra_length,
         common_ground=common_ground,
         add_final_end_wall=add_final_end_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1255,6 +1360,8 @@ def make_rotating_stairs_mesh(
     grounded_wall_extra_length=0.0,
     common_ground=False,
     add_final_end_wall=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return assemble_rotating_sequence(
         stairs,
@@ -1266,6 +1373,8 @@ def make_rotating_stairs_mesh(
         grounded_wall_extra_length=grounded_wall_extra_length,
         common_ground=common_ground,
         add_final_end_wall=add_final_end_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1277,6 +1386,8 @@ def make_stairs_turn_90_mesh(
     grounded_wall_extra_length=0.0,
     common_ground=False,
     add_final_end_wall=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return make_rotating_stairs_mesh(
         stairs,
@@ -1288,6 +1399,8 @@ def make_stairs_turn_90_mesh(
         grounded_wall_extra_length=grounded_wall_extra_length,
         common_ground=common_ground,
         add_final_end_wall=add_final_end_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1301,6 +1414,8 @@ def make_angled_stairs_mesh(
     grounded_wall_extra_length=0.0,
     common_ground=False,
     add_final_end_wall=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return assemble_angled_sequence(
         stairs,
@@ -1312,6 +1427,8 @@ def make_angled_stairs_mesh(
         grounded_wall_extra_length=grounded_wall_extra_length,
         common_ground=common_ground,
         add_final_end_wall=add_final_end_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1327,6 +1444,8 @@ def make_stairs_u_turn_mesh(
     add_final_end_wall=False,
     add_turn_platform_end_wall=True,
     add_turn_gap_wall=True,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return assemble_u_turn_sequence(
         stairs,
@@ -1342,6 +1461,8 @@ def make_stairs_u_turn_mesh(
         add_final_end_wall=add_final_end_wall,
         add_turn_platform_end_wall=add_turn_platform_end_wall,
         add_turn_gap_wall=add_turn_gap_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1354,6 +1475,8 @@ def make_linear_slopes_mesh(
     grounded_wall_extra_length=0.0,
     common_ground=False,
     add_final_end_wall=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return assemble_linear_sequence(
         slope,
@@ -1364,6 +1487,8 @@ def make_linear_slopes_mesh(
         grounded_wall_extra_length=grounded_wall_extra_length,
         common_ground=common_ground,
         add_final_end_wall=add_final_end_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1375,6 +1500,8 @@ def make_slopes_platform_slopes_mesh(
     grounded_wall_extra_length=0.0,
     common_ground=False,
     add_final_end_wall=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return make_linear_slopes_mesh(
         slope,
@@ -1385,6 +1512,8 @@ def make_slopes_platform_slopes_mesh(
         grounded_wall_extra_length=grounded_wall_extra_length,
         common_ground=common_ground,
         add_final_end_wall=add_final_end_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1397,6 +1526,8 @@ def make_rotating_slopes_mesh(
     grounded_wall_height=None,
     grounded_wall_extra_length=0.0,
     common_ground=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return assemble_rotating_sequence(
         slope,
@@ -1407,6 +1538,8 @@ def make_rotating_slopes_mesh(
         grounded_wall_height=grounded_wall_height,
         grounded_wall_extra_length=grounded_wall_extra_length,
         common_ground=common_ground,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1417,6 +1550,8 @@ def make_slopes_turn_90_mesh(
     grounded_wall_height=None,
     grounded_wall_extra_length=0.0,
     common_ground=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return make_rotating_slopes_mesh(
         slope,
@@ -1427,6 +1562,8 @@ def make_slopes_turn_90_mesh(
         grounded_wall_height=grounded_wall_height,
         grounded_wall_extra_length=grounded_wall_extra_length,
         common_ground=common_ground,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1440,6 +1577,8 @@ def make_angled_slopes_mesh(
     grounded_wall_extra_length=0.0,
     common_ground=False,
     add_final_end_wall=False,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return assemble_angled_sequence(
         slope,
@@ -1451,6 +1590,8 @@ def make_angled_slopes_mesh(
         grounded_wall_extra_length=grounded_wall_extra_length,
         common_ground=common_ground,
         add_final_end_wall=add_final_end_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1466,6 +1607,8 @@ def make_slopes_u_turn_mesh(
     add_final_end_wall=False,
     add_turn_platform_end_wall=True,
     add_turn_gap_wall=True,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return assemble_u_turn_sequence(
         slope,
@@ -1481,6 +1624,8 @@ def make_slopes_u_turn_mesh(
         add_final_end_wall=add_final_end_wall,
         add_turn_platform_end_wall=add_turn_platform_end_wall,
         add_turn_gap_wall=add_turn_gap_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1497,6 +1642,8 @@ def make_repeating_u_turn_stairs_mesh(
     add_final_end_wall=False,
     add_turn_platform_end_wall=True,
     add_turn_gap_wall=True,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return assemble_repeating_u_turn_sequence(
         stairs,
@@ -1512,6 +1659,8 @@ def make_repeating_u_turn_stairs_mesh(
         add_final_end_wall=add_final_end_wall,
         add_turn_platform_end_wall=add_turn_platform_end_wall,
         add_turn_gap_wall=add_turn_gap_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 
@@ -1528,6 +1677,8 @@ def make_repeating_u_turn_slopes_mesh(
     add_final_end_wall=False,
     add_turn_platform_end_wall=True,
     add_turn_gap_wall=True,
+    entry_length=0.0,
+    entry_wall_height=None,
 ):
     return assemble_repeating_u_turn_sequence(
         slope,
@@ -1543,6 +1694,8 @@ def make_repeating_u_turn_slopes_mesh(
         add_final_end_wall=add_final_end_wall,
         add_turn_platform_end_wall=add_turn_platform_end_wall,
         add_turn_gap_wall=add_turn_gap_wall,
+        entry_length=entry_length,
+        entry_wall_height=entry_wall_height,
     )
 
 

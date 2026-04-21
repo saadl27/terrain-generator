@@ -26,6 +26,7 @@ def _level_params(level: int):
         "step_depth": lerp(0.45, 0.60, t),
         "corridor_width": lerp(4.0, 2.6, t),
         "flat_length": lerp(2.0, 1.3, t),
+        "entry_length": lerp(2.8, 1.6, t),
         "num_segments": 3,
     }
 
@@ -65,6 +66,8 @@ def build_category_terrain(level: int) -> TerrainScene:
         grounded_wall_height=grounded_wall_height,
         common_ground=USE_COMMON_GROUND,
         add_final_end_wall=ADD_FINAL_STAIR_END_WALL,
+        entry_length=float(params["entry_length"]),
+        entry_wall_height=float(stairs_cfg.wall.wall_height),
     )
     mesh, base_dim = merge_feature_with_flat_base(feature_mesh)
     return TerrainScene(
@@ -75,13 +78,14 @@ def build_category_terrain(level: int) -> TerrainScene:
             "terrain_id": "linear_stairs",
             "label": f"Level {level} linear stairs",
             "type": "linear_stairs",
-            "pattern": "stairs -> platform -> stairs -> platform -> stairs -> platform",
+            "pattern": "entry corridor -> stairs -> platform -> stairs -> platform -> stairs -> platform",
             "num_segments": int(params["num_segments"]),
             "num_steps_per_segment": int(params["num_steps"]),
             "step_height": round_float(params["step_height"]),
             "step_depth": round_float(params["step_depth"]),
             "corridor_width": round_float(effective_width),
             "nominal_corridor_width": round_float(params["corridor_width"]),
+            "entry_corridor_length": round_float(params["entry_length"]),
             "flat_length_between_segments": round_float(params["flat_length"]),
             "grounded_side_walls": USE_GROUNDED_SIDE_WALLS,
             "common_ground": USE_COMMON_GROUND,

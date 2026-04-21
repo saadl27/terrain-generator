@@ -8,7 +8,7 @@ import trimesh
 from ...utils import merge_meshes
 from ..mesh_parts.create_tiles import build_mesh
 from ..mesh_parts.mesh_parts_cfg import PlatformMeshPartsCfg
-from ..mesh_parts.part_presets import make_platform_cfg, make_platform_for_stage
+from ..mesh_parts.part_presets import make_corner_cfg, make_platform_cfg, make_platform_for_stage
 
 
 TOTAL_CURRICULUM_LEVELS = 38
@@ -21,6 +21,7 @@ MIN_TERRAIN_LENGTH = 12.0
 SIDE_PADDING = 1.0
 END_PADDING = 1.0
 OVERLAY_EPS = 1.0e-3
+CORNER_LOOP_CELL_MARGIN = WALL_THICKNESS
 
 USE_GROUNDED_SIDE_WALLS = True
 USE_COMMON_GROUND = True
@@ -272,6 +273,54 @@ def build_corner_plateau_mesh(
     return normalize_ground_center(build_mesh(cfg))
 
 
+def corner_floor_outline(
+    *,
+    pre_length: float,
+    post_length: float,
+    pre_corridor_width: float,
+    post_corridor_width: float,
+    turn_angle_deg: float,
+    wall_thickness: float,
+) -> np.ndarray:
+    incoming_outer_width = pre_corridor_width + 2.0 * wall_thickness
+    outgoing_outer_width = post_corridor_width + 2.0 * wall_thickness
+
+    incoming_dir = np.array([0.0, 1.0])
+    outgoing_dir = unit(
+        np.array(
+            [
+                -np.sin(np.deg2rad(turn_angle_deg)),
+                np.cos(np.deg2rad(turn_angle_deg)),
+            ]
+        )
+    )
+
+    outer_sign = -1.0 if turn_angle_deg > 0.0 else 1.0
+    incoming_outer_offset = outer_sign * (incoming_outer_width / 2.0) * left_normal(incoming_dir)
+    outgoing_outer_offset = outer_sign * (outgoing_outer_width / 2.0) * left_normal(outgoing_dir)
+    incoming_inner_offset = -outer_sign * (incoming_outer_width / 2.0) * left_normal(incoming_dir)
+    outgoing_inner_offset = -outer_sign * (outgoing_outer_width / 2.0) * left_normal(outgoing_dir)
+
+    outer_floor_join = line_intersection(incoming_outer_offset, incoming_dir, outgoing_outer_offset, outgoing_dir)
+    inner_floor_join = line_intersection(incoming_inner_offset, incoming_dir, outgoing_inner_offset, outgoing_dir)
+
+    incoming_outer_start = incoming_outer_offset - incoming_dir * pre_length
+    incoming_inner_start = incoming_inner_offset - incoming_dir * pre_length
+    outgoing_outer_end = outgoing_outer_offset + outgoing_dir * post_length
+    outgoing_inner_end = outgoing_inner_offset + outgoing_dir * post_length
+
+    return np.array(
+        [
+            incoming_outer_start,
+            outer_floor_join,
+            outgoing_outer_end,
+            outgoing_inner_end,
+            inner_floor_join,
+            incoming_inner_start,
+        ]
+    )
+
+
 def normalize_ground_center(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     normalized = mesh.copy()
     if len(normalized.vertices) == 0:
@@ -359,6 +408,61 @@ def fit_mesh_to_dimensions(mesh: trimesh.Trimesh, target_width: float, target_le
     return merge_meshes([base_mesh, lifted], False)
 
 
+def build_corner_loop_mesh_for_cell(
+    *,
+    width: float,
+    length: float,
+    corridor_width: float,
+    pre_corridor_width: float,
+    post_corridor_width: float,
+    turn_angle_deg: float,
+    wall_height: float,
+    num_corners: int,
+    nominal_pre_length: float,
+    nominal_post_length: float,
+) -> Tuple[trimesh.Trimesh, Dict[str, float]]:
+    scale = solve_corner_loop_scale_to_cell(
+        target_width=width,
+        target_length=length,
+        num_corners=num_corners,
+        pre_corridor_width=pre_corridor_width,
+        post_corridor_width=post_corridor_width,
+        turn_angle_deg=turn_angle_deg,
+        nominal_pre_length=nominal_pre_length,
+        nominal_post_length=nominal_post_length,
+        wall_thickness=WALL_THICKNESS,
+        margin=CORNER_LOOP_CELL_MARGIN,
+    )
+    pre_length = max(1.0e-3, float(nominal_pre_length) * scale)
+    post_length = max(1.0e-3, float(nominal_post_length) * scale)
+    corner_cfg = make_corner_cfg(
+        name="corner_loop_cell_fill",
+        corridor_width=corridor_width,
+        pre_corridor_width=pre_corridor_width,
+        post_corridor_width=post_corridor_width,
+        wall_thickness=WALL_THICKNESS,
+        wall_height=wall_height,
+        floor_thickness=FLOOR_THICKNESS,
+        structure_height=max(2.0, wall_height),
+        pre_length=pre_length,
+        post_length=post_length,
+        turn_angle_deg=turn_angle_deg,
+        cap_ends=False,
+        load_from_cache=False,
+    )
+    feature_mesh = normalize_ground_center(build_corner_loop_feature_mesh(corner_cfg, num_corners=num_corners))
+    base_mesh = build_flat_mesh(width, length)
+    lifted_feature = feature_mesh.copy()
+    lifted_feature.apply_translation([0.0, 0.0, OVERLAY_EPS])
+    mesh = normalize_ground_center(merge_meshes([base_mesh, lifted_feature], False))
+    return mesh, {
+        "loop_scale": round_float(scale),
+        "pre_length": round_float(pre_length),
+        "post_length": round_float(post_length),
+        "loop_feature_extents": mesh_extents(feature_mesh),
+    }
+
+
 def expand_terrain_to_cell(terrain: TerrainScene, target_width: float, target_length: float) -> TerrainScene:
     expanded = copy_terrain_scene(terrain)
     terrain_type = expanded.metadata.get("type")
@@ -374,10 +478,29 @@ def expand_terrain_to_cell(terrain: TerrainScene, target_width: float, target_le
         )
         expanded.metadata["pattern"] = "cell-filled corner corridor"
         expanded.metadata["fills_non_corridor_area_to_wall_height"] = True
+    elif terrain_type == "corner_loop":
+        nominal_pre_length = float(expanded.metadata["pre_length"])
+        nominal_post_length = float(expanded.metadata["post_length"])
+        expanded.mesh, loop_metadata = build_corner_loop_mesh_for_cell(
+            width=target_width,
+            length=target_length,
+            corridor_width=float(expanded.metadata["corridor_width"]),
+            pre_corridor_width=float(expanded.metadata["pre_corridor_width"]),
+            post_corridor_width=float(expanded.metadata["post_corridor_width"]),
+            turn_angle_deg=float(expanded.metadata["turn_angle_deg"]),
+            wall_height=float(expanded.metadata["wall_height"]),
+            num_corners=int(expanded.metadata["num_corners"]),
+            nominal_pre_length=nominal_pre_length,
+            nominal_post_length=nominal_post_length,
+        )
+        expanded.metadata["pattern"] = "closed polygon loop scaled to the allocated cell"
+        expanded.metadata["preserves_loop_geometry"] = True
+        expanded.metadata["nominal_pre_length"] = round_float(nominal_pre_length)
+        expanded.metadata["nominal_post_length"] = round_float(nominal_post_length)
+        expanded.metadata["outer_polygon_uses_allocated_cell"] = True
+        expanded.metadata.update(loop_metadata)
     else:
         expanded.mesh = fit_mesh_to_dimensions(expanded.mesh, target_width, target_length)
-        if terrain_type == "corner_loop":
-            expanded.metadata["preserves_loop_geometry"] = True
     expanded.metadata["mesh_extents"] = mesh_extents(expanded.mesh)
     expanded.metadata["allocated_cell_width"] = round_float(target_width)
     expanded.metadata["allocated_cell_length"] = round_float(target_length)
@@ -443,6 +566,17 @@ def rotate_point_xy(point_xy: np.ndarray, yaw_deg: float) -> np.ndarray:
     return rotation @ point_xy
 
 
+def rotate_points_xy(points_xy: np.ndarray, yaw_deg: float) -> np.ndarray:
+    yaw_rad = np.deg2rad(yaw_deg)
+    rotation = np.array(
+        [
+            [np.cos(yaw_rad), -np.sin(yaw_rad)],
+            [np.sin(yaw_rad), np.cos(yaw_rad)],
+        ]
+    )
+    return points_xy @ rotation.T
+
+
 def corner_connection_geometry(cfg) -> Tuple[np.ndarray, np.ndarray]:
     turn_angle_rad = np.deg2rad(cfg.turn_angle_deg)
     outgoing_heading = np.array([-np.sin(turn_angle_rad), np.cos(turn_angle_rad)])
@@ -459,6 +593,113 @@ def closed_corner_loop_spec(requested_turn_angle_deg: float) -> Tuple[int, float
     num_corners = max(3, int(round(360.0 / abs_turn_angle_deg)))
     adjusted_turn_angle_deg = np.sign(requested_turn_angle_deg) * (360.0 / float(num_corners))
     return num_corners, float(adjusted_turn_angle_deg)
+
+
+def corner_loop_outline_points(
+    *,
+    num_corners: int,
+    pre_length: float,
+    post_length: float,
+    pre_corridor_width: float,
+    post_corridor_width: float,
+    turn_angle_deg: float,
+    wall_thickness: float,
+) -> np.ndarray:
+    segment_outline = corner_floor_outline(
+        pre_length=pre_length,
+        post_length=post_length,
+        pre_corridor_width=pre_corridor_width,
+        post_corridor_width=post_corridor_width,
+        turn_angle_deg=turn_angle_deg,
+        wall_thickness=wall_thickness,
+    )
+    turn_angle_rad = np.deg2rad(turn_angle_deg)
+    outgoing_heading = unit(np.array([-np.sin(turn_angle_rad), np.cos(turn_angle_rad)]))
+    incoming_edge_center = np.array([0.0, -pre_length])
+    outgoing_edge_center = outgoing_heading * post_length
+
+    outlines = []
+    current_entry_center = np.array([0.0, 0.0])
+    current_yaw_deg = 0.0
+    for _ in range(num_corners):
+        rotated_outline = rotate_points_xy(segment_outline, current_yaw_deg)
+        rotated_entry_center = rotate_point_xy(incoming_edge_center, current_yaw_deg)
+        translation_xy = current_entry_center - rotated_entry_center
+        outlines.append(rotated_outline + translation_xy)
+
+        rotated_exit_center = rotate_point_xy(outgoing_edge_center, current_yaw_deg) + translation_xy
+        current_entry_center = rotated_exit_center
+        current_yaw_deg += turn_angle_deg
+    return np.vstack(outlines)
+
+
+def corner_loop_outline_extents(
+    *,
+    num_corners: int,
+    pre_length: float,
+    post_length: float,
+    pre_corridor_width: float,
+    post_corridor_width: float,
+    turn_angle_deg: float,
+    wall_thickness: float,
+) -> np.ndarray:
+    outline_points = corner_loop_outline_points(
+        num_corners=num_corners,
+        pre_length=pre_length,
+        post_length=post_length,
+        pre_corridor_width=pre_corridor_width,
+        post_corridor_width=post_corridor_width,
+        turn_angle_deg=turn_angle_deg,
+        wall_thickness=wall_thickness,
+    )
+    return np.max(outline_points, axis=0) - np.min(outline_points, axis=0)
+
+
+def solve_corner_loop_scale_to_cell(
+    *,
+    target_width: float,
+    target_length: float,
+    num_corners: int,
+    pre_corridor_width: float,
+    post_corridor_width: float,
+    turn_angle_deg: float,
+    nominal_pre_length: float,
+    nominal_post_length: float,
+    wall_thickness: float,
+    margin: float = 0.0,
+) -> float:
+    available_width = max(target_width - 2.0 * margin, 1.0e-3)
+    available_length = max(target_length - 2.0 * margin, 1.0e-3)
+
+    def fits(scale: float) -> bool:
+        extents = corner_loop_outline_extents(
+            num_corners=num_corners,
+            pre_length=float(nominal_pre_length) * scale,
+            post_length=float(nominal_post_length) * scale,
+            pre_corridor_width=pre_corridor_width,
+            post_corridor_width=post_corridor_width,
+            turn_angle_deg=turn_angle_deg,
+            wall_thickness=wall_thickness,
+        )
+        return bool(extents[0] <= available_width + 1.0e-6 and extents[1] <= available_length + 1.0e-6)
+
+    low = 0.0
+    high = 1.0
+    if fits(high):
+        low = high
+        while fits(high):
+            low = high
+            high *= 2.0
+            if high > 1024.0:
+                break
+
+    for _ in range(40):
+        mid = 0.5 * (low + high)
+        if fits(mid):
+            low = mid
+        else:
+            high = mid
+    return low
 
 
 def build_corner_loop_feature_mesh(cfg, num_corners: int) -> trimesh.Trimesh:

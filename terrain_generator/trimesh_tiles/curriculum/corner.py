@@ -16,12 +16,12 @@ from ..mesh_parts.part_presets import make_corner_cfg
 def _level_params(level: int):
     t = difficulty_ratio(level)
     return {
-        "corridor_width": lerp(4.0, 2.6, t),
-        "pre_corridor_width": lerp(4.4, 2.6, t),
-        "post_corridor_width": lerp(4.2, 2.2, t),
+        "corridor_width": lerp(5.2, 2.8, t),
+        "pre_corridor_width": lerp(5.2, 2.8, t),
+        "post_corridor_width": lerp(5.2, 2.8, t),
         "turn_angle_deg": lerp(20.0, 90.0, t),
-        "pre_length": lerp(4.0, 5.2, t),
-        "post_length": lerp(4.0, 5.2, t),
+        "pre_length": lerp(1.6, 2.4, t),
+        "post_length": lerp(1.6, 2.4, t),
         "wall_height": lerp(1.2, 1.75, t),
     }
 
