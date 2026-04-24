@@ -1,6 +1,8 @@
 from .common import (
     ADD_FINAL_STAIR_END_WALL,
+    FILTER_UNUSED_LINEAR_AREA,
     FLOOR_THICKNESS,
+    LINEAR_SHARED_GROUNDED_WALL_HEIGHT,
     SIDE_WALL_EXTRA_HEIGHT,
     USE_COMMON_GROUND,
     USE_GROUNDED_SIDE_WALLS,
@@ -45,7 +47,7 @@ def build_category_terrain(level: int) -> TerrainScene:
         step_depth=float(params["step_depth"]),
         wall_height=max(1.0, float(params["num_steps"]) * float(params["step_height"]) + FLOOR_THICKNESS),
     )
-    grounded_wall_height = int(params["num_segments"]) * stairs_cfg.stairs[0].total_height + SIDE_WALL_EXTRA_HEIGHT
+    grounded_wall_height = LINEAR_SHARED_GROUNDED_WALL_HEIGHT
     platform_cfg = make_platform_cfg(
         name="linear_stairs_platform",
         width=stairs_cfg.dim[0],
@@ -56,7 +58,6 @@ def build_category_terrain(level: int) -> TerrainScene:
         wall_height=max(0.8, stairs_cfg.stairs[0].total_height),
         wall_edges=("left", "right"),
         load_from_cache=False,
-        surface_thickness=FLOOR_THICKNESS,
     )
     feature_mesh = make_linear_stairs_mesh(
         stairs_cfg,
@@ -67,7 +68,7 @@ def build_category_terrain(level: int) -> TerrainScene:
         common_ground=USE_COMMON_GROUND,
         add_final_end_wall=ADD_FINAL_STAIR_END_WALL,
         entry_length=float(params["entry_length"]),
-        entry_wall_height=float(stairs_cfg.wall.wall_height),
+        entry_wall_height=grounded_wall_height,
     )
     mesh, base_dim = merge_feature_with_flat_base(feature_mesh)
     return TerrainScene(
@@ -89,7 +90,11 @@ def build_category_terrain(level: int) -> TerrainScene:
             "flat_length_between_segments": round_float(params["flat_length"]),
             "grounded_side_walls": USE_GROUNDED_SIDE_WALLS,
             "common_ground": USE_COMMON_GROUND,
+            "grounded_wall_height": round_float(grounded_wall_height),
             "side_wall_extra_height": round_float(SIDE_WALL_EXTRA_HEIGHT),
+            "fixed_max_height_across_levels": True,
+            "filter_unused_area": FILTER_UNUSED_LINEAR_AREA,
+            "filter_unused_outer_width": round_float(stairs_cfg.dim[0]),
             "add_final_end_wall": ADD_FINAL_STAIR_END_WALL,
             **base_dim,
             "mesh_extents": mesh_extents(mesh),

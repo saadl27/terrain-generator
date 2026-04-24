@@ -25,6 +25,7 @@ CORNER_LOOP_CELL_MARGIN = WALL_THICKNESS
 
 USE_GROUNDED_SIDE_WALLS = True
 USE_COMMON_GROUND = True
+FILTER_UNUSED_LINEAR_AREA = True
 SIDE_WALL_EXTRA_HEIGHT = 2.0
 ADD_FINAL_STAIR_END_WALL = True
 ADD_FINAL_LINEAR_SLOPE_END_WALL = True
@@ -33,6 +34,14 @@ MIN_EFFECTIVE_CORRIDOR_WIDTH = 8.0
 U_TURN_STAGE_GAP = 2.0
 U_TURN_COMMON_GROUND = False
 DEFAULT_CATEGORY_GAP = 2.0
+
+LINEAR_NUM_SEGMENTS = 3
+LINEAR_STAIRS_MAX_STAGE_RISE = 12 * 0.18
+LINEAR_SLOPES_MAX_STAGE_RISE = float(np.tan(np.deg2rad(28.0)) * 6.2)
+LINEAR_SHARED_GROUNDED_WALL_HEIGHT = (
+    LINEAR_NUM_SEGMENTS * max(LINEAR_STAIRS_MAX_STAGE_RISE, LINEAR_SLOPES_MAX_STAGE_RISE)
+    + SIDE_WALL_EXTRA_HEIGHT
+)
 
 CATEGORY_ORDER = (
     "flat",
@@ -396,16 +405,70 @@ def merge_feature_with_flat_base(feature_mesh: trimesh.Trimesh) -> Tuple[trimesh
     return mesh, {"base_width": round_float(base_width), "base_length": round_float(base_length)}
 
 
-def fit_mesh_to_dimensions(mesh: trimesh.Trimesh, target_width: float, target_length: float) -> trimesh.Trimesh:
+def build_linear_unused_area_filter_mesh(
+    width: float,
+    length: float,
+    course_outer_width: float,
+    height: float,
+) -> trimesh.Trimesh:
+    side_width = 0.5 * (float(width) - float(course_outer_width))
+    if side_width <= 1.0e-6 or height <= 1.0e-6:
+        return trimesh.Trimesh()
+
+    half_width = 0.5 * float(width)
+    centers_x = (
+        -half_width + 0.5 * side_width,
+        half_width - 0.5 * side_width,
+    )
+    return merge_meshes(
+        [
+            box_mesh(
+                side_width,
+                float(length),
+                float(height),
+                (center_x, 0.0, 0.5 * float(height)),
+            )
+            for center_x in centers_x
+        ],
+        False,
+    )
+
+
+def fit_mesh_to_dimensions(
+    mesh: trimesh.Trimesh,
+    target_width: float,
+    target_length: float,
+    force_overlay: bool = False,
+    filter_unused_area: bool = False,
+    filter_unused_outer_width: Optional[float] = None,
+) -> trimesh.Trimesh:
     normalized = normalize_ground_center(mesh)
     extents = normalized.bounds[1] - normalized.bounds[0]
-    if extents[0] >= target_width - 1.0e-6 and extents[1] >= target_length - 1.0e-6:
+    if (
+        not force_overlay
+        and not filter_unused_area
+        and extents[0] >= target_width - 1.0e-6
+        and extents[1] >= target_length - 1.0e-6
+    ):
         return normalized
 
-    base_mesh = build_flat_mesh(max(target_width, float(extents[0])), max(target_length, float(extents[1])))
+    fitted_width = max(target_width, float(extents[0]))
+    fitted_length = max(target_length, float(extents[1]))
+    base_mesh = build_flat_mesh(fitted_width, fitted_length)
     lifted = normalized.copy()
     lifted.apply_translation([0.0, 0.0, OVERLAY_EPS])
-    return merge_meshes([base_mesh, lifted], False)
+    meshes = [base_mesh]
+    if filter_unused_area:
+        filter_mesh = build_linear_unused_area_filter_mesh(
+            fitted_width,
+            fitted_length,
+            float(filter_unused_outer_width) if filter_unused_outer_width is not None else float(extents[0]),
+            float(extents[2]) + OVERLAY_EPS,
+        )
+        if len(filter_mesh.vertices) > 0:
+            meshes.append(filter_mesh)
+    meshes.append(lifted)
+    return merge_meshes(meshes, False)
 
 
 def build_corner_loop_mesh_for_cell(
@@ -500,7 +563,17 @@ def expand_terrain_to_cell(terrain: TerrainScene, target_width: float, target_le
         expanded.metadata["outer_polygon_uses_allocated_cell"] = True
         expanded.metadata.update(loop_metadata)
     else:
-        expanded.mesh = fit_mesh_to_dimensions(expanded.mesh, target_width, target_length)
+        filter_unused_area = bool(expanded.metadata.get("filter_unused_area", False))
+        expanded.mesh = fit_mesh_to_dimensions(
+            expanded.mesh,
+            target_width,
+            target_length,
+            force_overlay=bool(expanded.metadata.get("fixed_max_height_across_levels", False)),
+            filter_unused_area=filter_unused_area,
+            filter_unused_outer_width=expanded.metadata.get("filter_unused_outer_width"),
+        )
+        if filter_unused_area:
+            expanded.metadata["filtered_unused_area_to_max_height"] = True
     expanded.metadata["mesh_extents"] = mesh_extents(expanded.mesh)
     expanded.metadata["allocated_cell_width"] = round_float(target_width)
     expanded.metadata["allocated_cell_length"] = round_float(target_length)

@@ -342,13 +342,14 @@ def assemble_linear_sequence(
         stage_mesh.apply_translation([stage_translation_xy[0], stage_translation_xy[1], current_height])
         meshes.append(stage_mesh)
         stage_support_z = current_height + stage_bounds[0, 2]
+        stage_wall_base_z = ground_z if common_ground else stage_support_z
         if common_ground:
             support_mesh = _build_ground_fill_mesh(
                 stage,
                 0,
                 stage_translation_xy,
                 current_height + stage_bounds[0, 2],
-                stage_support_z,
+                ground_z,
             )
             if support_mesh is not None:
                 fill_meshes.append(support_mesh)
@@ -358,8 +359,8 @@ def assemble_linear_sequence(
                 0,
                 stage_translation_xy,
                 current_height,
-                stage_support_z,
-                _wall_height_for_top(stage_support_z, wall_top_world_z),
+                stage_wall_base_z,
+                _wall_height_for_top(stage_wall_base_z, wall_top_world_z),
                 grounded_wall_extra_length,
             )
             if wall_mesh is not None:
@@ -373,13 +374,14 @@ def assemble_linear_sequence(
         platform_mesh.apply_translation([platform_center_world[0], platform_center_world[1], platform_translation_z])
         meshes.append(platform_mesh)
         platform_support_z = stage_support_z + stage_rise
+        platform_wall_base_z = ground_z if common_ground else platform_support_z
         if common_ground:
             support_mesh = _build_ground_fill_mesh(
                 platform,
                 0,
                 platform_center_world,
                 platform_translation_z + platform_bounds[0, 2],
-                platform_support_z,
+                ground_z,
             )
             if support_mesh is not None:
                 fill_meshes.append(support_mesh)
@@ -389,8 +391,8 @@ def assemble_linear_sequence(
                 0,
                 platform_center_world,
                 platform_translation_z,
-                platform_support_z,
-                _wall_height_for_top(platform_support_z, wall_top_world_z),
+                platform_wall_base_z,
+                _wall_height_for_top(platform_wall_base_z, wall_top_world_z),
                 grounded_wall_extra_length,
             )
             if wall_mesh is not None:
@@ -401,8 +403,8 @@ def assemble_linear_sequence(
                     0,
                     platform_center_world,
                     platform_translation_z,
-                    platform_support_z,
-                    _wall_height_for_top(platform_support_z, wall_top_world_z),
+                    platform_wall_base_z,
+                    _wall_height_for_top(platform_wall_base_z, wall_top_world_z),
                     0.0,
                     wall_edges_override=("up",),
                 )

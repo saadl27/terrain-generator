@@ -2,7 +2,9 @@ import numpy as np
 
 from .common import (
     ADD_FINAL_LINEAR_SLOPE_END_WALL,
+    FILTER_UNUSED_LINEAR_AREA,
     FLOOR_THICKNESS,
+    LINEAR_SHARED_GROUNDED_WALL_HEIGHT,
     SIDE_WALL_EXTRA_HEIGHT,
     USE_COMMON_GROUND,
     USE_GROUNDED_SIDE_WALLS,
@@ -31,6 +33,10 @@ def _level_params(level: int):
     }
 
 
+def _stage_rise(params) -> float:
+    return float(np.tan(np.deg2rad(params["slope_angle_deg"])) * params["slope_length"])
+
+
 def build_category_terrain(level: int) -> TerrainScene:
     params = _level_params(level)
     effective_width = effective_corridor_width(params["corridor_width"])
@@ -45,8 +51,8 @@ def build_category_terrain(level: int) -> TerrainScene:
         slope_resolution=36,
         wall_height=max(1.0, FLOOR_THICKNESS + np.tan(np.deg2rad(params["slope_angle_deg"])) * params["slope_length"]),
     )
-    platform_height = np.tan(np.deg2rad(params["slope_angle_deg"])) * params["slope_length"]
-    grounded_wall_height = int(params["num_segments"]) * platform_height + SIDE_WALL_EXTRA_HEIGHT
+    platform_height = _stage_rise(params)
+    grounded_wall_height = LINEAR_SHARED_GROUNDED_WALL_HEIGHT
     platform_cfg = make_platform_cfg(
         name="linear_slopes_platform",
         width=slope_cfg.dim[0],
@@ -68,7 +74,7 @@ def build_category_terrain(level: int) -> TerrainScene:
         common_ground=USE_COMMON_GROUND,
         add_final_end_wall=ADD_FINAL_LINEAR_SLOPE_END_WALL,
         entry_length=float(params["entry_length"]),
-        entry_wall_height=float(slope_cfg.wall.wall_height),
+        entry_wall_height=grounded_wall_height,
     )
     mesh, base_dim = merge_feature_with_flat_base(feature_mesh)
     return TerrainScene(
@@ -89,7 +95,11 @@ def build_category_terrain(level: int) -> TerrainScene:
             "flat_length_between_segments": round_float(params["flat_length"]),
             "grounded_side_walls": USE_GROUNDED_SIDE_WALLS,
             "common_ground": USE_COMMON_GROUND,
+            "grounded_wall_height": round_float(grounded_wall_height),
             "side_wall_extra_height": round_float(SIDE_WALL_EXTRA_HEIGHT),
+            "fixed_max_height_across_levels": True,
+            "filter_unused_area": FILTER_UNUSED_LINEAR_AREA,
+            "filter_unused_outer_width": round_float(slope_cfg.dim[0]),
             "add_final_end_wall": ADD_FINAL_LINEAR_SLOPE_END_WALL,
             **base_dim,
             "mesh_extents": mesh_extents(mesh),
