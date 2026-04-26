@@ -194,16 +194,17 @@ def _compute_level_lengths(
     layout_cfg: CurriculumLayoutCfg,
     category_widths: Dict[str, float],
 ) -> Dict[int, float]:
-    lengths: Dict[int, float] = {}
+    shared_row_length = layout_cfg.min_cell_length
     for level in level_numbers:
-        row_length = layout_cfg.min_cell_length
         for category_id in CATEGORY_ORDER:
             extents = raw_terrain_map[level][category_id].metadata["mesh_extents"]
-            row_length = max(row_length, float(extents["y"]) + 2.0 * layout_cfg.terrain_padding_y)
+            shared_row_length = max(
+                shared_row_length,
+                float(extents["y"]) + 2.0 * layout_cfg.terrain_padding_y,
+            )
             if category_id == "corner":
-                row_length = max(row_length, category_widths[category_id])
-        lengths[level] = row_length
-    return lengths
+                shared_row_length = max(shared_row_length, category_widths[category_id])
+    return {level: shared_row_length for level in level_numbers}
 
 
 def _assemble_category_mesh(

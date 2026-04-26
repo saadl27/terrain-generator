@@ -1,6 +1,8 @@
 from .common import (
     ADD_FINAL_STAIR_END_WALL,
+    FILTER_UNUSED_COMPLEX_AREA,
     FLOOR_THICKNESS,
+    MAX_TURNING_STAGES,
     SIDE_WALL_EXTRA_HEIGHT,
     U_TURN_COMMON_GROUND,
     USE_COMMON_GROUND,
@@ -31,6 +33,7 @@ from ..mesh_parts.part_presets import make_corner_for_stage, make_platform_for_s
 def _level_params(level: int):
     t = difficulty_ratio(level)
     turn_angle_deg = turn_angle_for_level(level)
+    nominal_num_segments = 3 if abs(turn_angle_deg - 90.0) <= 1.0e-6 else 2
     return {
         "num_steps": lerp_int(2, 11, t),
         "step_height": lerp(0.11, 0.20, t),
@@ -38,7 +41,7 @@ def _level_params(level: int):
         "corridor_width": lerp(3.4, 2.5, t),
         "entry_length": lerp(2.8, 1.6, t),
         "turn_angle_deg": turn_angle_deg,
-        "num_segments": 3 if abs(turn_angle_deg - 90.0) <= 1.0e-6 else 2,
+        "num_segments": min(MAX_TURNING_STAGES, nominal_num_segments),
     }
 
 
@@ -73,7 +76,7 @@ def build_category_terrain(level: int) -> TerrainScene:
             common_ground=common_ground,
             add_final_end_wall=ADD_FINAL_STAIR_END_WALL,
             entry_length=float(params["entry_length"]),
-            entry_wall_height=float(stairs_cfg.wall.wall_height),
+            entry_wall_height=grounded_wall_height,
         )
         terrain_type = "turning_stairs"
         pattern = "stairs -> flat platform -> stairs -> final platform"
@@ -92,7 +95,7 @@ def build_category_terrain(level: int) -> TerrainScene:
             common_ground=U_TURN_COMMON_GROUND,
             add_final_end_wall=ADD_FINAL_STAIR_END_WALL,
             entry_length=float(params["entry_length"]),
-            entry_wall_height=float(stairs_cfg.wall.wall_height),
+            entry_wall_height=grounded_wall_height,
         )
         terrain_type = "u_turn_stairs"
         pattern = "stairs -> U-turn landing -> stairs -> final platform"
@@ -119,7 +122,7 @@ def build_category_terrain(level: int) -> TerrainScene:
             common_ground=common_ground,
             add_final_end_wall=ADD_FINAL_STAIR_END_WALL,
             entry_length=float(params["entry_length"]),
-            entry_wall_height=float(stairs_cfg.wall.wall_height),
+            entry_wall_height=grounded_wall_height,
         )
         terrain_type = "turning_stairs"
         pattern = "stairs -> 90-degree turn platform -> stairs -> final platform"
@@ -146,7 +149,7 @@ def build_category_terrain(level: int) -> TerrainScene:
             common_ground=common_ground,
             add_final_end_wall=ADD_FINAL_STAIR_END_WALL,
             entry_length=float(params["entry_length"]),
-            entry_wall_height=float(stairs_cfg.wall.wall_height),
+            entry_wall_height=grounded_wall_height,
         )
         terrain_type = "turning_stairs"
         pattern = "stairs -> angled turn platform -> stairs -> final platform"
@@ -163,6 +166,7 @@ def build_category_terrain(level: int) -> TerrainScene:
             "type": terrain_type,
             "pattern": f"entry corridor -> {pattern}",
             "num_segments": int(params["num_segments"]),
+            "max_turning_stages": MAX_TURNING_STAGES,
             "num_steps_per_segment": int(params["num_steps"]),
             "step_height": round_float(params["step_height"]),
             "step_depth": round_float(params["step_depth"]),
@@ -174,8 +178,13 @@ def build_category_terrain(level: int) -> TerrainScene:
             "turn_pattern": turn_pattern,
             "grounded_side_walls": USE_GROUNDED_SIDE_WALLS,
             "common_ground": common_ground,
+            "grounded_wall_height": round_float(grounded_wall_height),
             "side_wall_extra_height": round_float(SIDE_WALL_EXTRA_HEIGHT),
             "add_final_end_wall": ADD_FINAL_STAIR_END_WALL,
+            "filter_unused_area": FILTER_UNUSED_COMPLEX_AREA,
+            "filter_unused_strategy": "footprint",
+            "filter_unused_keepout_width": base_dim["feature_width"],
+            "filter_unused_keepout_length": base_dim["feature_length"],
             **base_dim,
             "mesh_extents": mesh_extents(mesh),
         },

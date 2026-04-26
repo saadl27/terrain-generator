@@ -1,3 +1,5 @@
+import pytest
+
 from ..trimesh_tiles.curriculum.common import (
     CATEGORY_ORDER,
     CORNER_LOOP_CELL_MARGIN,
@@ -51,6 +53,7 @@ def test_category_columns_share_level_direction_dimensions():
 
     assert max(total_heights) == min(total_heights)
 
+    reference_span = None
     for level in (1, 20, 38):
         spans = []
         for category_id in CATEGORY_ORDER:
@@ -61,3 +64,6 @@ def test_category_columns_share_level_direction_dimensions():
             )
             spans.append(cell["y_max"] - cell["y_min"])
         assert max(spans) == min(spans)
+        if reference_span is None:
+            reference_span = spans[0]
+        assert spans[0] == pytest.approx(reference_span)

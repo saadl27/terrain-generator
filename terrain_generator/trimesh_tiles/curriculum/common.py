@@ -22,10 +22,15 @@ SIDE_PADDING = 1.0
 END_PADDING = 1.0
 OVERLAY_EPS = 1.0e-3
 CORNER_LOOP_CELL_MARGIN = WALL_THICKNESS
+FOOTPRINT_FILTER_CELL_SIZE = 0.35
+FOOTPRINT_FILTER_MIN_CELLS = 48
+FOOTPRINT_FILTER_MAX_CELLS = 128
+FOOTPRINT_FILTER_DILATION_CELLS = 1
 
 USE_GROUNDED_SIDE_WALLS = True
 USE_COMMON_GROUND = True
 FILTER_UNUSED_LINEAR_AREA = True
+FILTER_UNUSED_COMPLEX_AREA = True
 USE_ARENA_WALLS = True
 EXTEND_LINEAR_FINAL_PLATEAU = True
 SIDE_WALL_EXTRA_HEIGHT = 2.0
@@ -34,7 +39,8 @@ ADD_FINAL_LINEAR_SLOPE_END_WALL = True
 COURSE_WIDTH_BOOST = 4.0
 MIN_EFFECTIVE_CORRIDOR_WIDTH = 8.0
 U_TURN_STAGE_GAP = 2.0
-U_TURN_COMMON_GROUND = False
+U_TURN_COMMON_GROUND = True
+MAX_TURNING_STAGES = 3
 DEFAULT_ROW_GAP = 0.0
 DEFAULT_CATEGORY_GAP = 0.0
 
@@ -443,6 +449,163 @@ def build_linear_unused_area_filter_mesh(
     )
 
 
+def build_rectangular_unused_area_filter_mesh(
+    width: float,
+    length: float,
+    keepout_width: float,
+    keepout_length: float,
+    height: float,
+) -> trimesh.Trimesh:
+    width = float(width)
+    length = float(length)
+    keepout_width = min(max(float(keepout_width), 0.0), width)
+    keepout_length = min(max(float(keepout_length), 0.0), length)
+    height = float(height)
+    if height <= 1.0e-6:
+        return trimesh.Trimesh()
+
+    side_width = 0.5 * (width - keepout_width)
+    end_length = 0.5 * (length - keepout_length)
+    half_width = 0.5 * width
+    half_length = 0.5 * length
+
+    meshes = []
+    if side_width > 1.0e-6:
+        for center_x in (-half_width + 0.5 * side_width, half_width - 0.5 * side_width):
+            meshes.append(
+                box_mesh(
+                    side_width,
+                    length,
+                    height,
+                    (center_x, 0.0, 0.5 * height),
+                )
+            )
+    if end_length > 1.0e-6 and keepout_width > 1.0e-6:
+        for center_y in (-half_length + 0.5 * end_length, half_length - 0.5 * end_length):
+            meshes.append(
+                box_mesh(
+                    keepout_width,
+                    end_length,
+                    height,
+                    (0.0, center_y, 0.5 * height),
+                )
+            )
+    if len(meshes) == 0:
+        return trimesh.Trimesh()
+    return merge_meshes(meshes, False)
+
+
+def _dilate_mask(mask: np.ndarray, radius_cells: int) -> np.ndarray:
+    radius_cells = int(radius_cells)
+    if radius_cells <= 0:
+        return mask
+    padded = np.pad(mask, radius_cells, mode="constant", constant_values=False)
+    dilated = np.zeros_like(mask, dtype=bool)
+    for dy in range(-radius_cells, radius_cells + 1):
+        for dx in range(-radius_cells, radius_cells + 1):
+            y_start = radius_cells + dy
+            x_start = radius_cells + dx
+            dilated |= padded[y_start : y_start + mask.shape[0], x_start : x_start + mask.shape[1]]
+    return dilated
+
+
+def _footprint_filter_grid_shape(width: float, length: float) -> Tuple[int, int]:
+    cells_x = int(np.ceil(float(width) / FOOTPRINT_FILTER_CELL_SIZE))
+    cells_y = int(np.ceil(float(length) / FOOTPRINT_FILTER_CELL_SIZE))
+    cells_x = max(FOOTPRINT_FILTER_MIN_CELLS, min(FOOTPRINT_FILTER_MAX_CELLS, cells_x))
+    cells_y = max(FOOTPRINT_FILTER_MIN_CELLS, min(FOOTPRINT_FILTER_MAX_CELLS, cells_y))
+    return cells_x, cells_y
+
+
+def _course_footprint_mask_from_mesh(
+    mesh: trimesh.Trimesh,
+    width: float,
+    length: float,
+    cells_x: int,
+    cells_y: int,
+    keep_height_threshold: float,
+) -> np.ndarray:
+    if len(mesh.vertices) == 0:
+        return np.zeros((cells_y, cells_x), dtype=bool)
+
+    dx = float(width) / float(cells_x)
+    dy = float(length) / float(cells_y)
+    xs = np.linspace(-0.5 * float(width) + 0.5 * dx, 0.5 * float(width) - 0.5 * dx, cells_x)
+    ys = np.linspace(-0.5 * float(length) + 0.5 * dy, 0.5 * float(length) - 0.5 * dy, cells_y)
+    xx, yy = np.meshgrid(xs, ys, indexing="xy")
+    origins = np.column_stack(
+        [
+            xx.reshape(-1),
+            yy.reshape(-1),
+            np.full(xx.size, float(mesh.bounds[1, 2]) + 1.0),
+        ]
+    )
+    vectors = np.tile(np.array([[0.0, 0.0, -1.0]]), (origins.shape[0], 1))
+    points, index_ray, _ = mesh.ray.intersects_location(origins, vectors, multiple_hits=False)
+
+    heights = np.full(origins.shape[0], -np.inf, dtype=float)
+    if len(points) > 0:
+        heights[index_ray] = points[:, 2]
+    keep_mask = heights.reshape(cells_y, cells_x) > float(keep_height_threshold)
+    return _dilate_mask(keep_mask, FOOTPRINT_FILTER_DILATION_CELLS)
+
+
+def build_footprint_unused_area_filter_mesh(
+    mesh: trimesh.Trimesh,
+    width: float,
+    length: float,
+    height: float,
+    keep_height_threshold: float = FLOOR_THICKNESS + 0.5 * OVERLAY_EPS,
+) -> trimesh.Trimesh:
+    width = float(width)
+    length = float(length)
+    height = float(height)
+    if width <= 1.0e-6 or length <= 1.0e-6 or height <= 1.0e-6:
+        return trimesh.Trimesh()
+
+    source_mesh = normalize_ground_center(mesh)
+    cells_x, cells_y = _footprint_filter_grid_shape(width, length)
+    keep_mask = _course_footprint_mask_from_mesh(
+        source_mesh,
+        width,
+        length,
+        cells_x,
+        cells_y,
+        keep_height_threshold,
+    )
+    high_mask = ~keep_mask
+
+    dx = width / float(cells_x)
+    dy = length / float(cells_y)
+    x_min = -0.5 * width
+    y_min = -0.5 * length
+    meshes = []
+    for row_idx in range(cells_y):
+        col_idx = 0
+        while col_idx < cells_x:
+            if not high_mask[row_idx, col_idx]:
+                col_idx += 1
+                continue
+            run_start = col_idx
+            while col_idx < cells_x and high_mask[row_idx, col_idx]:
+                col_idx += 1
+            run_end = col_idx
+            run_width = float(run_end - run_start) * dx
+            center_x = x_min + 0.5 * float(run_start + run_end) * dx
+            center_y = y_min + (float(row_idx) + 0.5) * dy
+            meshes.append(
+                box_mesh(
+                    run_width,
+                    dy,
+                    height,
+                    (center_x, center_y, 0.5 * height),
+                )
+            )
+    if len(meshes) == 0:
+        return trimesh.Trimesh()
+    return merge_meshes(meshes, False)
+
+
 def build_arena_wall_mesh(
     width: float,
     length: float,
@@ -520,6 +683,9 @@ def fit_mesh_to_dimensions(
     force_overlay: bool = False,
     filter_unused_area: bool = False,
     filter_unused_outer_width: Optional[float] = None,
+    filter_unused_keepout_width: Optional[float] = None,
+    filter_unused_keepout_length: Optional[float] = None,
+    filter_unused_strategy: Optional[str] = None,
 ) -> trimesh.Trimesh:
     normalized = normalize_ground_center(mesh)
     extents = normalized.bounds[1] - normalized.bounds[0]
@@ -538,12 +704,29 @@ def fit_mesh_to_dimensions(
     lifted.apply_translation([0.0, 0.0, OVERLAY_EPS])
     meshes = [base_mesh]
     if filter_unused_area:
-        filter_mesh = build_linear_unused_area_filter_mesh(
-            fitted_width,
-            fitted_length,
-            float(filter_unused_outer_width) if filter_unused_outer_width is not None else float(extents[0]),
-            float(extents[2]) + OVERLAY_EPS,
-        )
+        filter_height = max(float(extents[2]), ARENA_WALL_HEIGHT) + OVERLAY_EPS
+        if filter_unused_strategy == "footprint":
+            filter_mesh = build_footprint_unused_area_filter_mesh(
+                normalized,
+                fitted_width,
+                fitted_length,
+                filter_height,
+            )
+        elif filter_unused_keepout_width is not None and filter_unused_keepout_length is not None:
+            filter_mesh = build_rectangular_unused_area_filter_mesh(
+                fitted_width,
+                fitted_length,
+                float(filter_unused_keepout_width),
+                float(filter_unused_keepout_length),
+                filter_height,
+            )
+        else:
+            filter_mesh = build_linear_unused_area_filter_mesh(
+                fitted_width,
+                fitted_length,
+                float(filter_unused_outer_width) if filter_unused_outer_width is not None else float(extents[0]),
+                filter_height,
+            )
         if len(filter_mesh.vertices) > 0:
             meshes.append(filter_mesh)
     meshes.append(lifted)
@@ -608,6 +791,7 @@ def build_corner_loop_mesh_for_cell(
 def expand_terrain_to_cell(terrain: TerrainScene, target_width: float, target_length: float) -> TerrainScene:
     expanded = copy_terrain_scene(terrain)
     terrain_type = expanded.metadata.get("type")
+    filtered_unused_area = False
     if terrain_type == "corner":
         expanded.mesh = build_corner_plateau_mesh(
             width=target_width,
@@ -641,6 +825,24 @@ def expand_terrain_to_cell(terrain: TerrainScene, target_width: float, target_le
         expanded.metadata["nominal_post_length"] = round_float(nominal_post_length)
         expanded.metadata["outer_polygon_uses_allocated_cell"] = True
         expanded.metadata.update(loop_metadata)
+        filter_unused_area = bool(expanded.metadata.get("filter_unused_area", False))
+        if filter_unused_area:
+            filter_height = (
+                max(
+                    float(expanded.mesh.bounds[1, 2] - expanded.mesh.bounds[0, 2]),
+                    float(expanded.metadata.get("arena_wall_height", ARENA_WALL_HEIGHT)),
+                )
+                + OVERLAY_EPS
+            )
+            filter_mesh = build_footprint_unused_area_filter_mesh(
+                expanded.mesh,
+                target_width,
+                target_length,
+                filter_height,
+            )
+            if len(filter_mesh.vertices) > 0:
+                expanded.mesh = normalize_ground_center(merge_meshes([expanded.mesh, filter_mesh], False))
+            filtered_unused_area = True
     else:
         filter_unused_area = bool(expanded.metadata.get("filter_unused_area", False))
         expanded.mesh = fit_mesh_to_dimensions(
@@ -650,9 +852,12 @@ def expand_terrain_to_cell(terrain: TerrainScene, target_width: float, target_le
             force_overlay=bool(expanded.metadata.get("fixed_max_height_across_levels", False)),
             filter_unused_area=filter_unused_area,
             filter_unused_outer_width=expanded.metadata.get("filter_unused_outer_width"),
+            filter_unused_keepout_width=expanded.metadata.get("filter_unused_keepout_width"),
+            filter_unused_keepout_length=expanded.metadata.get("filter_unused_keepout_length"),
+            filter_unused_strategy=expanded.metadata.get("filter_unused_strategy"),
         )
         if filter_unused_area:
-            expanded.metadata["filtered_unused_area_to_max_height"] = True
+            filtered_unused_area = True
         extend_final_plateau = bool(
             expanded.metadata.get("extend_final_plateau_to_arena", False)
         )
@@ -669,6 +874,8 @@ def expand_terrain_to_cell(terrain: TerrainScene, target_width: float, target_le
             if len(plateau_mesh.vertices) > 0:
                 expanded.mesh = normalize_ground_center(merge_meshes([expanded.mesh, plateau_mesh], False))
                 expanded.metadata["extended_final_plateau_to_arena"] = True
+    if filtered_unused_area:
+        expanded.metadata["filtered_unused_area_to_max_height"] = True
     arena_walls = bool(expanded.metadata.get("arena_walls", USE_ARENA_WALLS))
     if arena_walls:
         expanded.mesh = normalize_ground_center(expanded.mesh)

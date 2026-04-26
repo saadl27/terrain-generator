@@ -1,4 +1,5 @@
 from .common import (
+    FILTER_UNUSED_COMPLEX_AREA,
     FLOOR_THICKNESS,
     WALL_THICKNESS,
     TerrainScene,
@@ -79,6 +80,10 @@ def build_corner_terrain(
             "pre_length": round_float(pre_length),
             "post_length": round_float(post_length),
             "wall_height": round_float(wall_height),
+            "filter_unused_area": FILTER_UNUSED_COMPLEX_AREA,
+            "filter_unused_strategy": "footprint",
+            "filter_unused_keepout_width": base_dim["feature_width"],
+            "filter_unused_keepout_length": base_dim["feature_length"],
             **base_dim,
             "mesh_extents": mesh_extents(mesh),
         },
