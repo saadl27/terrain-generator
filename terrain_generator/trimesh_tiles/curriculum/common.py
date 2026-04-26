@@ -26,6 +26,8 @@ CORNER_LOOP_CELL_MARGIN = WALL_THICKNESS
 USE_GROUNDED_SIDE_WALLS = True
 USE_COMMON_GROUND = True
 FILTER_UNUSED_LINEAR_AREA = True
+USE_ARENA_WALLS = True
+EXTEND_LINEAR_FINAL_PLATEAU = True
 SIDE_WALL_EXTRA_HEIGHT = 2.0
 ADD_FINAL_STAIR_END_WALL = True
 ADD_FINAL_LINEAR_SLOPE_END_WALL = True
@@ -33,7 +35,8 @@ COURSE_WIDTH_BOOST = 4.0
 MIN_EFFECTIVE_CORRIDOR_WIDTH = 8.0
 U_TURN_STAGE_GAP = 2.0
 U_TURN_COMMON_GROUND = False
-DEFAULT_CATEGORY_GAP = 2.0
+DEFAULT_ROW_GAP = 0.0
+DEFAULT_CATEGORY_GAP = 0.0
 
 LINEAR_NUM_SEGMENTS = 3
 LINEAR_STAIRS_MAX_STAGE_RISE = 12 * 0.18
@@ -42,6 +45,7 @@ LINEAR_SHARED_GROUNDED_WALL_HEIGHT = (
     LINEAR_NUM_SEGMENTS * max(LINEAR_STAIRS_MAX_STAGE_RISE, LINEAR_SLOPES_MAX_STAGE_RISE)
     + SIDE_WALL_EXTRA_HEIGHT
 )
+ARENA_WALL_HEIGHT = LINEAR_SHARED_GROUNDED_WALL_HEIGHT
 
 CATEGORY_ORDER = (
     "flat",
@@ -98,7 +102,7 @@ class CurriculumLayoutCfg:
     terrain_padding_y: float = 0.0
     divider_wall_thickness: float = 0.20
     divider_wall_height: float = 1.20
-    row_gap: float = 1.50
+    row_gap: float = DEFAULT_ROW_GAP
     category_gap: float = DEFAULT_CATEGORY_GAP
     center_rows_on_origin: bool = True
 
@@ -402,7 +406,12 @@ def merge_feature_with_flat_base(feature_mesh: trimesh.Trimesh) -> Tuple[trimesh
     lifted_feature = feature_mesh.copy()
     lifted_feature.apply_translation([0.0, 0.0, OVERLAY_EPS])
     mesh = merge_meshes([base_mesh, lifted_feature], False)
-    return mesh, {"base_width": round_float(base_width), "base_length": round_float(base_length)}
+    return mesh, {
+        "base_width": round_float(base_width),
+        "base_length": round_float(base_length),
+        "feature_width": round_float(feature_extents[0]),
+        "feature_length": round_float(feature_extents[1]),
+    }
 
 
 def build_linear_unused_area_filter_mesh(
@@ -431,6 +440,76 @@ def build_linear_unused_area_filter_mesh(
             for center_x in centers_x
         ],
         False,
+    )
+
+
+def build_arena_wall_mesh(
+    width: float,
+    length: float,
+    height: float,
+    wall_thickness: float = WALL_THICKNESS,
+) -> trimesh.Trimesh:
+    width = float(width)
+    length = float(length)
+    height = float(height)
+    wall_thickness = float(wall_thickness)
+    if width <= wall_thickness or length <= wall_thickness or height <= 1.0e-6:
+        return trimesh.Trimesh()
+
+    half_width = 0.5 * width
+    half_length = 0.5 * length
+    half_wall = 0.5 * wall_thickness
+    return merge_meshes(
+        [
+            box_mesh(
+                wall_thickness,
+                length,
+                height,
+                (-half_width + half_wall, 0.0, 0.5 * height),
+            ),
+            box_mesh(
+                wall_thickness,
+                length,
+                height,
+                (half_width - half_wall, 0.0, 0.5 * height),
+            ),
+            box_mesh(
+                width,
+                wall_thickness,
+                height,
+                (0.0, -half_length + half_wall, 0.5 * height),
+            ),
+            box_mesh(
+                width,
+                wall_thickness,
+                height,
+                (0.0, half_length - half_wall, 0.5 * height),
+            ),
+        ],
+        False,
+    )
+
+
+def build_linear_final_plateau_extension_mesh(
+    cell_length: float,
+    feature_length: float,
+    plateau_width: float,
+    plateau_height: float,
+    arena_wall_thickness: float = WALL_THICKNESS,
+) -> trimesh.Trimesh:
+    plateau_height = float(plateau_height)
+    plateau_width = float(plateau_width)
+    y_start = 0.5 * float(feature_length) - OVERLAY_EPS
+    y_end = 0.5 * float(cell_length) - float(arena_wall_thickness)
+    plateau_length = y_end - y_start
+    if plateau_width <= 1.0e-6 or plateau_height <= 1.0e-6 or plateau_length <= 1.0e-6:
+        return trimesh.Trimesh()
+
+    return box_mesh(
+        plateau_width,
+        plateau_length,
+        plateau_height,
+        (0.0, 0.5 * (y_start + y_end), 0.5 * plateau_height),
     )
 
 
@@ -574,6 +653,39 @@ def expand_terrain_to_cell(terrain: TerrainScene, target_width: float, target_le
         )
         if filter_unused_area:
             expanded.metadata["filtered_unused_area_to_max_height"] = True
+        extend_final_plateau = bool(
+            expanded.metadata.get("extend_final_plateau_to_arena", False)
+        )
+        if extend_final_plateau:
+            expanded.mesh = normalize_ground_center(expanded.mesh)
+            fitted_length = float(expanded.mesh.bounds[1, 1] - expanded.mesh.bounds[0, 1])
+            plateau_mesh = build_linear_final_plateau_extension_mesh(
+                fitted_length,
+                float(expanded.metadata["feature_length"]),
+                float(expanded.metadata["final_plateau_width"]),
+                float(expanded.metadata["final_plateau_height"]) + OVERLAY_EPS,
+                WALL_THICKNESS,
+            )
+            if len(plateau_mesh.vertices) > 0:
+                expanded.mesh = normalize_ground_center(merge_meshes([expanded.mesh, plateau_mesh], False))
+                expanded.metadata["extended_final_plateau_to_arena"] = True
+    arena_walls = bool(expanded.metadata.get("arena_walls", USE_ARENA_WALLS))
+    if arena_walls:
+        expanded.mesh = normalize_ground_center(expanded.mesh)
+        arena_height = max(
+            float(expanded.mesh.bounds[1, 2] - expanded.mesh.bounds[0, 2]),
+            float(expanded.metadata.get("arena_wall_height", ARENA_WALL_HEIGHT)),
+        )
+        arena_mesh = build_arena_wall_mesh(
+            target_width,
+            target_length,
+            arena_height,
+            WALL_THICKNESS,
+        )
+        if len(arena_mesh.vertices) > 0:
+            expanded.mesh = normalize_ground_center(merge_meshes([expanded.mesh, arena_mesh], False))
+        expanded.metadata["arena_walls"] = True
+        expanded.metadata["arena_wall_height"] = round_float(arena_height)
     expanded.metadata["mesh_extents"] = mesh_extents(expanded.mesh)
     expanded.metadata["allocated_cell_width"] = round_float(target_width)
     expanded.metadata["allocated_cell_length"] = round_float(target_length)

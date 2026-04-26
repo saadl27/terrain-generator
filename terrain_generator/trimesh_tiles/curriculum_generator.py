@@ -192,6 +192,7 @@ def _compute_level_lengths(
     raw_terrain_map: Dict[int, Dict[str, TerrainScene]],
     level_numbers: List[int],
     layout_cfg: CurriculumLayoutCfg,
+    category_widths: Dict[str, float],
 ) -> Dict[int, float]:
     lengths: Dict[int, float] = {}
     for level in level_numbers:
@@ -199,6 +200,8 @@ def _compute_level_lengths(
         for category_id in CATEGORY_ORDER:
             extents = raw_terrain_map[level][category_id].metadata["mesh_extents"]
             row_length = max(row_length, float(extents["y"]) + 2.0 * layout_cfg.terrain_padding_y)
+            if category_id == "corner":
+                row_length = max(row_length, category_widths[category_id])
         lengths[level] = row_length
     return lengths
 
@@ -297,24 +300,15 @@ def build_curriculum_categories(
 
     raw_terrain_map = {level: _build_level_terrain_map(level) for level in level_numbers}
     category_widths = _compute_category_widths(raw_terrain_map, level_numbers, layout_cfg)
-    level_lengths = _compute_level_lengths(raw_terrain_map, level_numbers, layout_cfg)
+    level_lengths = _compute_level_lengths(raw_terrain_map, level_numbers, layout_cfg, category_widths)
 
     curriculum_categories = []
     for category_id in CATEGORY_ORDER:
-        category_level_lengths = dict(level_lengths)
-        if category_id == "corner":
-            for level in level_numbers:
-                raw_extents = raw_terrain_map[level][category_id].metadata["mesh_extents"]
-                category_level_lengths[level] = max(
-                    layout_cfg.min_cell_length,
-                    category_widths[category_id],
-                    float(raw_extents["y"]) + 2.0 * layout_cfg.terrain_padding_y,
-                )
         expanded_terrains = tuple(
             expand_terrain_to_cell(
                 raw_terrain_map[level][category_id],
                 category_widths[category_id],
-                category_level_lengths[level],
+                level_lengths[level],
             )
             for level in level_numbers
         )
@@ -323,7 +317,7 @@ def build_curriculum_categories(
             expanded_terrains,
             level_numbers,
             category_widths[category_id],
-            category_level_lengths,
+            level_lengths,
             layout_cfg,
         )
         curriculum_categories.append(

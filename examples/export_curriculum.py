@@ -64,13 +64,13 @@ def main():
     parser.add_argument(
         "--row-gap",
         type=float,
-        default=1.5,
+        default=0.0,
         help="Gap in meters between consecutive levels inside each subterrain category column.",
     )
     parser.add_argument(
         "--category-gap",
         type=float,
-        default=2.0,
+        default=0.0,
         help="Gap in meters between merged subterrain categories in the full curriculum mesh.",
     )
     args = parser.parse_args()

@@ -256,7 +256,6 @@ def _build_entry_corridor_meshes(part, yaw_deg, start_edge_center_world, floor_b
         return []
 
     wall_cfg = getattr(part, "wall", None)
-    wall_thickness = wall_cfg.wall_thickness if wall_cfg is not None else 0.12
     entry_wall_height = wall_height if wall_height is not None else (wall_cfg.wall_height if wall_cfg is not None else 0.0)
 
     corridor_center_world = start_edge_center_world - _rotate_point_xy(
@@ -273,13 +272,19 @@ def _build_entry_corridor_meshes(part, yaw_deg, start_edge_center_world, floor_b
     meshes.append(floor_mesh)
 
     if entry_wall_height > 1.0e-6:
-        wall_offset_x = max(0.0, part.dim[0] / 2.0 - wall_thickness / 2.0)
-        for sign in (-1.0, 1.0):
-            wall_mesh = trimesh.creation.box((wall_thickness, entry_length, entry_wall_height))
-            wall_mesh.apply_translation([sign * wall_offset_x, 0.0, floor_base_z + entry_wall_height / 2.0])
-            wall_mesh = _rotate_mesh(wall_mesh, yaw_deg)
-            wall_mesh.apply_translation([corridor_center_world[0], corridor_center_world[1], 0.0])
-            meshes.append(wall_mesh)
+        for edge in ("left", "right"):
+            wall_mesh = _build_grounded_wall_segment(
+                part,
+                yaw_deg,
+                corridor_center_world,
+                0.0,
+                floor_base_z,
+                entry_wall_height,
+                edge,
+                entry_length,
+            )
+            if wall_mesh is not None:
+                meshes.append(wall_mesh)
 
     return meshes
 

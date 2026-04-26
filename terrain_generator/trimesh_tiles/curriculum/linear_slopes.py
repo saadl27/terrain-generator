@@ -1,7 +1,7 @@
 import numpy as np
 
 from .common import (
-    ADD_FINAL_LINEAR_SLOPE_END_WALL,
+    EXTEND_LINEAR_FINAL_PLATEAU,
     FILTER_UNUSED_LINEAR_AREA,
     FLOOR_THICKNESS,
     LINEAR_SHARED_GROUNDED_WALL_HEIGHT,
@@ -53,6 +53,7 @@ def build_category_terrain(level: int) -> TerrainScene:
     )
     platform_height = _stage_rise(params)
     grounded_wall_height = LINEAR_SHARED_GROUNDED_WALL_HEIGHT
+    final_plateau_height = int(params["num_segments"]) * platform_height
     platform_cfg = make_platform_cfg(
         name="linear_slopes_platform",
         width=slope_cfg.dim[0],
@@ -72,7 +73,7 @@ def build_category_terrain(level: int) -> TerrainScene:
         grounded_side_walls=USE_GROUNDED_SIDE_WALLS,
         grounded_wall_height=grounded_wall_height,
         common_ground=USE_COMMON_GROUND,
-        add_final_end_wall=ADD_FINAL_LINEAR_SLOPE_END_WALL,
+        add_final_end_wall=False,
         entry_length=float(params["entry_length"]),
         entry_wall_height=grounded_wall_height,
     )
@@ -99,8 +100,11 @@ def build_category_terrain(level: int) -> TerrainScene:
             "side_wall_extra_height": round_float(SIDE_WALL_EXTRA_HEIGHT),
             "fixed_max_height_across_levels": True,
             "filter_unused_area": FILTER_UNUSED_LINEAR_AREA,
-            "filter_unused_outer_width": round_float(slope_cfg.dim[0]),
-            "add_final_end_wall": ADD_FINAL_LINEAR_SLOPE_END_WALL,
+            "filter_unused_outer_width": round_float(effective_width),
+            "extend_final_plateau_to_arena": EXTEND_LINEAR_FINAL_PLATEAU,
+            "final_plateau_width": round_float(effective_width),
+            "final_plateau_height": round_float(final_plateau_height),
+            "add_final_end_wall": False,
             **base_dim,
             "mesh_extents": mesh_extents(mesh),
         },
