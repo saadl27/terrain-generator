@@ -1,7 +1,7 @@
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import trimesh
 
@@ -44,19 +44,32 @@ _CATEGORY_BUILDERS = {
     "turning_slopes": build_turning_slopes_category_terrain,
 }
 
+CategoryBuilder = Callable[[int], TerrainScene]
 
-def _build_level_terrain_map(level: int) -> Dict[str, TerrainScene]:
+
+def _build_level_terrain_map(
+    level: int,
+    category_order: Sequence[str] = CATEGORY_ORDER,
+    category_builders: Optional[Mapping[str, CategoryBuilder]] = None,
+) -> Dict[str, TerrainScene]:
     validate_level(level)
+    builders = dict(_CATEGORY_BUILDERS)
+    if category_builders is not None:
+        builders.update(category_builders)
     terrain_map = {}
-    for category_id in CATEGORY_ORDER:
-        terrain = _CATEGORY_BUILDERS[category_id](level)
+    for category_id in category_order:
+        terrain = builders[category_id](level)
         terrain_map[category_id] = annotate_terrain(terrain, level=level, category_id=category_id)
     return terrain_map
 
 
-def _build_level_terrains(level: int) -> Tuple[TerrainScene, ...]:
-    terrain_map = _build_level_terrain_map(level)
-    return tuple(terrain_map[category_id] for category_id in CATEGORY_ORDER)
+def _build_level_terrains(
+    level: int,
+    category_order: Sequence[str] = CATEGORY_ORDER,
+    category_builders: Optional[Mapping[str, CategoryBuilder]] = None,
+) -> Tuple[TerrainScene, ...]:
+    terrain_map = _build_level_terrain_map(level, category_order=category_order, category_builders=category_builders)
+    return tuple(terrain_map[category_id] for category_id in category_order)
 
 
 def _assemble_level_mesh(
@@ -111,24 +124,25 @@ def _assemble_level_mesh(
         running += width
         boundaries.append(running)
 
-    for boundary_x in boundaries:
-        meshes.append(
-            box_mesh(
-                layout_cfg.divider_wall_thickness,
-                row_length,
-                layout_cfg.divider_wall_height,
-                (boundary_x, 0.0, 0.5 * layout_cfg.divider_wall_height),
+    if layout_cfg.divider_wall_height > 1.0e-6 and layout_cfg.divider_wall_thickness > 1.0e-6:
+        for boundary_x in boundaries:
+            meshes.append(
+                box_mesh(
+                    layout_cfg.divider_wall_thickness,
+                    row_length,
+                    layout_cfg.divider_wall_height,
+                    (boundary_x, 0.0, 0.5 * layout_cfg.divider_wall_height),
+                )
             )
-        )
-    for boundary_y in (-0.5 * row_length, 0.5 * row_length):
-        meshes.append(
-            box_mesh(
-                total_width,
-                layout_cfg.divider_wall_thickness,
-                layout_cfg.divider_wall_height,
-                (0.5 * total_width, boundary_y, 0.5 * layout_cfg.divider_wall_height),
+        for boundary_y in (-0.5 * row_length, 0.5 * row_length):
+            meshes.append(
+                box_mesh(
+                    total_width,
+                    layout_cfg.divider_wall_thickness,
+                    layout_cfg.divider_wall_height,
+                    (0.5 * total_width, boundary_y, 0.5 * layout_cfg.divider_wall_height),
+                )
             )
-        )
 
     level_mesh = merge_meshes(meshes, False)
     level_mesh = normalize_ground_center(level_mesh)
@@ -176,9 +190,10 @@ def _compute_category_widths(
     raw_terrain_map: Dict[int, Dict[str, TerrainScene]],
     level_numbers: List[int],
     layout_cfg: CurriculumLayoutCfg,
+    category_order: Sequence[str] = CATEGORY_ORDER,
 ) -> Dict[str, float]:
-    widths: Dict[str, float] = {category_id: layout_cfg.min_cell_width for category_id in CATEGORY_ORDER}
-    for category_id in CATEGORY_ORDER:
+    widths: Dict[str, float] = {category_id: layout_cfg.min_cell_width for category_id in category_order}
+    for category_id in category_order:
         for level in level_numbers:
             extents = raw_terrain_map[level][category_id].metadata["mesh_extents"]
             widths[category_id] = max(
@@ -193,10 +208,11 @@ def _compute_level_lengths(
     level_numbers: List[int],
     layout_cfg: CurriculumLayoutCfg,
     category_widths: Dict[str, float],
+    category_order: Sequence[str] = CATEGORY_ORDER,
 ) -> Dict[int, float]:
     shared_row_length = layout_cfg.min_cell_length
     for level in level_numbers:
-        for category_id in CATEGORY_ORDER:
+        for category_id in category_order:
             extents = raw_terrain_map[level][category_id].metadata["mesh_extents"]
             shared_row_length = max(
                 shared_row_length,
@@ -214,18 +230,21 @@ def _assemble_category_mesh(
     column_width: float,
     level_lengths: Dict[int, float],
     layout_cfg: CurriculumLayoutCfg,
+    category_label: Optional[str] = None,
 ) -> Tuple[trimesh.Trimesh, Dict[str, object]]:
     total_height = sum(level_lengths[level] for level in level_numbers)
     total_height += layout_cfg.row_gap * max(len(level_numbers) - 1, 0)
 
-    meshes = [
-        box_mesh(
-            column_width,
-            total_height,
-            FLOOR_THICKNESS,
-            (0.0, 0.0, -0.5 * FLOOR_THICKNESS),
+    meshes = []
+    if layout_cfg.add_category_base_floor:
+        meshes.append(
+            box_mesh(
+                column_width,
+                total_height,
+                FLOOR_THICKNESS,
+                (0.0, 0.0, -0.5 * FLOOR_THICKNESS),
+            )
         )
-    ]
 
     level_cells = []
     row_boundaries = [0.5 * total_height]
@@ -257,35 +276,37 @@ def _assemble_category_mesh(
         row_boundaries.append(row_bottom)
         current_top = row_bottom - layout_cfg.row_gap
 
-    for boundary_x in (-0.5 * column_width, 0.5 * column_width):
-        meshes.append(
-            box_mesh(
-                layout_cfg.divider_wall_thickness,
-                total_height,
-                layout_cfg.divider_wall_height,
-                (boundary_x, 0.0, 0.5 * layout_cfg.divider_wall_height),
+    if layout_cfg.divider_wall_height > 1.0e-6 and layout_cfg.divider_wall_thickness > 1.0e-6:
+        for boundary_x in (-0.5 * column_width, 0.5 * column_width):
+            meshes.append(
+                box_mesh(
+                    layout_cfg.divider_wall_thickness,
+                    total_height,
+                    layout_cfg.divider_wall_height,
+                    (boundary_x, 0.0, 0.5 * layout_cfg.divider_wall_height),
+                )
             )
-        )
 
-    for boundary_y in row_boundaries:
-        meshes.append(
-            box_mesh(
-                column_width,
-                layout_cfg.divider_wall_thickness,
-                layout_cfg.divider_wall_height,
-                (0.0, boundary_y, 0.5 * layout_cfg.divider_wall_height),
+        for boundary_y in row_boundaries:
+            meshes.append(
+                box_mesh(
+                    column_width,
+                    layout_cfg.divider_wall_thickness,
+                    layout_cfg.divider_wall_height,
+                    (0.0, boundary_y, 0.5 * layout_cfg.divider_wall_height),
+                )
             )
-        )
 
     category_mesh = merge_meshes(meshes, False)
     category_mesh = normalize_ground_center(category_mesh)
 
     metadata = {
         "category_id": category_id,
-        "label": CATEGORY_LABELS[category_id],
+        "label": CATEGORY_LABELS[category_id] if category_label is None else category_label,
         "level_count": len(level_numbers),
         "column_width": round_float(column_width),
         "total_height": round_float(total_height),
+        "add_category_base_floor": layout_cfg.add_category_base_floor,
         "level_cells": level_cells,
         "mesh_extents": mesh_extents(category_mesh),
     }
@@ -295,16 +316,29 @@ def _assemble_category_mesh(
 def build_curriculum_categories(
     levels: Optional[Iterable[int]] = None,
     layout_cfg: Optional[CurriculumLayoutCfg] = None,
+    category_order: Sequence[str] = CATEGORY_ORDER,
+    category_builders: Optional[Mapping[str, CategoryBuilder]] = None,
+    category_labels: Optional[Mapping[str, str]] = None,
 ) -> Tuple[CurriculumCategory, ...]:
     layout_cfg = CurriculumLayoutCfg() if layout_cfg is None else layout_cfg
     level_numbers = normalize_levels(levels)
+    labels = dict(CATEGORY_LABELS)
+    if category_labels is not None:
+        labels.update(category_labels)
 
-    raw_terrain_map = {level: _build_level_terrain_map(level) for level in level_numbers}
-    category_widths = _compute_category_widths(raw_terrain_map, level_numbers, layout_cfg)
-    level_lengths = _compute_level_lengths(raw_terrain_map, level_numbers, layout_cfg, category_widths)
+    raw_terrain_map = {
+        level: _build_level_terrain_map(
+            level,
+            category_order=category_order,
+            category_builders=category_builders,
+        )
+        for level in level_numbers
+    }
+    category_widths = _compute_category_widths(raw_terrain_map, level_numbers, layout_cfg, category_order)
+    level_lengths = _compute_level_lengths(raw_terrain_map, level_numbers, layout_cfg, category_widths, category_order)
 
     curriculum_categories = []
-    for category_id in CATEGORY_ORDER:
+    for category_id in category_order:
         expanded_terrains = tuple(
             expand_terrain_to_cell(
                 raw_terrain_map[level][category_id],
@@ -320,16 +354,17 @@ def build_curriculum_categories(
             category_widths[category_id],
             level_lengths,
             layout_cfg,
+            labels[category_id],
         )
         curriculum_categories.append(
             CurriculumCategory(
                 category_id=category_id,
-                label=CATEGORY_LABELS[category_id],
+                label=labels[category_id],
                 terrains=expanded_terrains,
                 category_mesh=category_mesh,
                 metadata={
                     "category_id": category_id,
-                    "label": CATEGORY_LABELS[category_id],
+                    "label": labels[category_id],
                     "levels": level_numbers,
                     "category_layout": category_layout,
                 },
@@ -341,9 +376,18 @@ def build_curriculum_categories(
 def build_full_curriculum_mesh(
     levels: Optional[Iterable[int]] = None,
     layout_cfg: Optional[CurriculumLayoutCfg] = None,
+    category_order: Sequence[str] = CATEGORY_ORDER,
+    category_builders: Optional[Mapping[str, CategoryBuilder]] = None,
+    category_labels: Optional[Mapping[str, str]] = None,
 ) -> Tuple[trimesh.Trimesh, Dict[str, object], Tuple[CurriculumCategory, ...]]:
     layout_cfg = CurriculumLayoutCfg() if layout_cfg is None else layout_cfg
-    curriculum_categories = build_curriculum_categories(levels=levels, layout_cfg=layout_cfg)
+    curriculum_categories = build_curriculum_categories(
+        levels=levels,
+        layout_cfg=layout_cfg,
+        category_order=category_order,
+        category_builders=category_builders,
+        category_labels=category_labels,
+    )
 
     total_width = sum(float(category.metadata["category_layout"]["column_width"]) for category in curriculum_categories)
     total_width += layout_cfg.category_gap * max(len(curriculum_categories) - 1, 0)
@@ -388,12 +432,21 @@ def export_curriculum(
     levels: Optional[Iterable[int]] = None,
     mesh_extension: str = DEFAULT_MESH_EXTENSION,
     layout_cfg: Optional[CurriculumLayoutCfg] = None,
+    category_order: Sequence[str] = CATEGORY_ORDER,
+    category_builders: Optional[Mapping[str, CategoryBuilder]] = None,
+    category_labels: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, object]:
     layout_cfg = CurriculumLayoutCfg() if layout_cfg is None else layout_cfg
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    full_mesh, full_layout, curriculum_categories = build_full_curriculum_mesh(levels=levels, layout_cfg=layout_cfg)
+    full_mesh, full_layout, curriculum_categories = build_full_curriculum_mesh(
+        levels=levels,
+        layout_cfg=layout_cfg,
+        category_order=category_order,
+        category_builders=category_builders,
+        category_labels=category_labels,
+    )
 
     full_dir = output_path / "full_curriculum"
     full_dir.mkdir(parents=True, exist_ok=True)
@@ -463,6 +516,7 @@ def export_curriculum(
 __all__ = [
     "CATEGORY_LABELS",
     "CATEGORY_ORDER",
+    "CategoryBuilder",
     "DEFAULT_MESH_EXTENSION",
     "TOTAL_CURRICULUM_LEVELS",
     "CurriculumCategory",

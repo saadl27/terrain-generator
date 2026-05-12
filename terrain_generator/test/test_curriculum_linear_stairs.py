@@ -70,6 +70,19 @@ def test_linear_stairs_and_slopes_share_max_height():
     "build_terrain",
     (build_linear_stairs_terrain, build_linear_slopes_terrain),
 )
+def test_linear_curriculum_base_stays_inside_side_walls(build_terrain):
+    terrain = build_terrain(30)
+    side_wall_outer_width = float(terrain.metadata["filter_unused_outer_width"]) + 2.0 * WALL_THICKNESS
+
+    assert terrain.metadata["base_width"] == pytest.approx(side_wall_outer_width, abs=1.0e-3)
+    assert terrain.metadata["feature_width"] == pytest.approx(side_wall_outer_width, abs=1.0e-3)
+    assert terrain.metadata["mesh_extents"]["x"] == pytest.approx(side_wall_outer_width, abs=1.0e-3)
+
+
+@pytest.mark.parametrize(
+    "build_terrain",
+    (build_linear_stairs_terrain, build_linear_slopes_terrain),
+)
 def test_linear_curriculum_entry_walls_extend_to_shared_height(monkeypatch, build_terrain):
     entry_wall_heights = []
     entry_wall_segments = []

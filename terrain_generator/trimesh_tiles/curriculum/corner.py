@@ -38,16 +38,19 @@ def build_corner_terrain(
     pre_length: float,
     post_length: float,
     wall_height: float = 1.4,
+    include_walls: bool = True,
 ) -> TerrainScene:
     num_corners, adjusted_turn_angle_deg = closed_corner_loop_spec(turn_angle_deg)
     loop_corridor_width = corridor_width
+    wall_thickness = WALL_THICKNESS if include_walls else 0.0
+    effective_wall_height = wall_height if include_walls else 0.0
     corner_cfg = make_corner_cfg(
         name=f"{terrain_id}_corner_loop",
         corridor_width=loop_corridor_width,
         pre_corridor_width=loop_corridor_width,
         post_corridor_width=loop_corridor_width,
-        wall_thickness=WALL_THICKNESS,
-        wall_height=wall_height,
+        wall_thickness=wall_thickness,
+        wall_height=effective_wall_height,
         floor_thickness=FLOOR_THICKNESS,
         structure_height=max(2.0, wall_height),
         pre_length=pre_length,
@@ -79,18 +82,21 @@ def build_corner_terrain(
             "num_corners": num_corners,
             "pre_length": round_float(pre_length),
             "post_length": round_float(post_length),
-            "wall_height": round_float(wall_height),
-            "filter_unused_area": FILTER_UNUSED_COMPLEX_AREA,
+            "has_walls": include_walls,
+            "wall_height": round_float(effective_wall_height),
+            "wall_thickness": round_float(wall_thickness),
+            "filter_unused_area": FILTER_UNUSED_COMPLEX_AREA if include_walls else False,
             "filter_unused_strategy": "footprint",
             "filter_unused_keepout_width": base_dim["feature_width"],
             "filter_unused_keepout_length": base_dim["feature_length"],
+            "arena_walls": include_walls,
             **base_dim,
             "mesh_extents": mesh_extents(mesh),
         },
     )
 
 
-def build_category_terrain(level: int) -> TerrainScene:
+def build_category_terrain(level: int, include_walls: bool = True) -> TerrainScene:
     params = _level_params(level)
     return build_corner_terrain(
         terrain_id="corner",
@@ -102,4 +108,5 @@ def build_category_terrain(level: int) -> TerrainScene:
         pre_length=float(params["pre_length"]),
         post_length=float(params["post_length"]),
         wall_height=float(params["wall_height"]),
+        include_walls=include_walls,
     )

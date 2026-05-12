@@ -73,6 +73,13 @@ def main():
         default=0.0,
         help="Gap in meters between merged subterrain categories in the full curriculum mesh.",
     )
+    parser.add_argument(
+        "--no-category-base-floor",
+        action="store_false",
+        dest="add_category_base_floor",
+        help="Do not add the common floor under each category column; use per-cell terrain floors only.",
+    )
+    parser.set_defaults(add_category_base_floor=True)
     args = parser.parse_args()
 
     if args.start_level > args.end_level:
@@ -87,6 +94,7 @@ def main():
         divider_wall_thickness=args.divider_wall_thickness,
         row_gap=args.row_gap,
         category_gap=args.category_gap,
+        add_category_base_floor=args.add_category_base_floor,
     )
     manifest = export_curriculum(
         args.output_dir,

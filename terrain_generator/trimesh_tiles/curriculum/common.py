@@ -25,7 +25,8 @@ CORNER_LOOP_CELL_MARGIN = WALL_THICKNESS
 FOOTPRINT_FILTER_CELL_SIZE = 0.35
 FOOTPRINT_FILTER_MIN_CELLS = 48
 FOOTPRINT_FILTER_MAX_CELLS = 128
-FOOTPRINT_FILTER_DILATION_CELLS = 1
+FOOTPRINT_FILTER_DILATION_CELLS = 0
+FOOTPRINT_FILTER_SIMPLIFY_CELLS = 1.25
 
 USE_GROUNDED_SIDE_WALLS = True
 USE_COMMON_GROUND = True
@@ -81,6 +82,7 @@ class TerrainScene:
     label: str
     mesh: trimesh.Trimesh
     metadata: Dict[str, object]
+    filter_mesh: Optional[trimesh.Trimesh] = None
 
 
 @dataclass
@@ -111,6 +113,7 @@ class CurriculumLayoutCfg:
     row_gap: float = DEFAULT_ROW_GAP
     category_gap: float = DEFAULT_CATEGORY_GAP
     center_rows_on_origin: bool = True
+    add_category_base_floor: bool = True
 
 
 def validate_level(level: int) -> None:
@@ -357,6 +360,21 @@ def normalize_ground_center(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     return normalized
 
 
+def center_xy_preserve_z(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    centered = mesh.copy()
+    if len(centered.vertices) == 0:
+        return centered
+    bounds = centered.bounds
+    centered.apply_translation(
+        [
+            -0.5 * (bounds[0, 0] + bounds[1, 0]),
+            -0.5 * (bounds[0, 1] + bounds[1, 1]),
+            0.0,
+        ]
+    )
+    return centered
+
+
 def box_mesh(size_x: float, size_y: float, size_z: float, center: Tuple[float, float, float]) -> trimesh.Trimesh:
     return trimesh.creation.box((size_x, size_y, size_z), trimesh.transformations.translation_matrix(center))
 
@@ -400,24 +418,174 @@ def copy_terrain_scene(terrain: TerrainScene) -> TerrainScene:
         label=terrain.label,
         mesh=terrain.mesh.copy(),
         metadata=copy.deepcopy(terrain.metadata),
+        filter_mesh=terrain.filter_mesh.copy() if terrain.filter_mesh is not None else None,
     )
 
 
-def merge_feature_with_flat_base(feature_mesh: trimesh.Trimesh) -> Tuple[trimesh.Trimesh, Dict[str, float]]:
+def _is_redundant_ground_fill_component(mesh: trimesh.Trimesh) -> bool:
+    if len(mesh.vertices) == 0:
+        return False
+
+    bounds = mesh.bounds
+    z_min = float(bounds[0, 2])
+    z_max = float(bounds[1, 2])
+    z_extent = z_max - z_min
+    if z_min < -2.0 * OVERLAY_EPS:
+        return False
+    if z_max > FLOOR_THICKNESS + 2.0 * OVERLAY_EPS:
+        return False
+    if z_extent <= 1.0e-8:
+        return False
+
+    z_values = np.unique(np.round(mesh.vertices[:, 2], 6))
+    return len(z_values) <= 2
+
+
+def remove_redundant_ground_fill(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    if len(mesh.vertices) == 0:
+        return mesh.copy()
+
+    components = mesh.split(only_watertight=False)
+    kept_components = [
+        component
+        for component in components
+        if not _is_redundant_ground_fill_component(component)
+    ]
+    if len(kept_components) == len(components):
+        return mesh.copy()
+    if len(kept_components) == 0:
+        return trimesh.Trimesh()
+    return merge_meshes(kept_components, False)
+
+
+def _floor_slab_info(mesh: trimesh.Trimesh) -> Optional[Tuple[float, float, float, float, float, float, float]]:
+    if len(mesh.vertices) == 0:
+        return None
+
+    bounds = mesh.bounds
+    x_min = float(bounds[0, 0])
+    x_max = float(bounds[1, 0])
+    y_min = float(bounds[0, 1])
+    y_max = float(bounds[1, 1])
+    z_min = float(bounds[0, 2])
+    z_max = float(bounds[1, 2])
+    z_extent = z_max - z_min
+    if abs(z_extent - FLOOR_THICKNESS) > 3.0 * OVERLAY_EPS:
+        return None
+
+    z_values = np.unique(np.round(mesh.vertices[:, 2], 6))
+    if len(z_values) > 2:
+        return None
+
+    area = (x_max - x_min) * (y_max - y_min)
+    if area <= 1.0e-8:
+        return None
+    return x_min, x_max, y_min, y_max, z_min, z_max, area
+
+
+def remove_redundant_contained_floor_slabs(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    if len(mesh.vertices) == 0:
+        return mesh.copy()
+
+    components = list(mesh.split(only_watertight=False))
+    slab_infos = [_floor_slab_info(component) for component in components]
+    remove_indices = set()
+    for idx, info in enumerate(slab_infos):
+        if info is None:
+            continue
+        x_min, x_max, y_min, y_max, z_min, z_max, area = info
+        for other_idx, other_info in enumerate(slab_infos):
+            if idx == other_idx or other_info is None:
+                continue
+            other_x_min, other_x_max, other_y_min, other_y_max, other_z_min, other_z_max, other_area = other_info
+            same_area = abs(other_area - area) <= 1.0e-8 * max(area, 1.0)
+            if other_area < area or (same_area and other_idx > idx):
+                continue
+
+            overlap_x = max(0.0, min(x_max, other_x_max) - max(x_min, other_x_min))
+            overlap_y = max(0.0, min(y_max, other_y_max) - max(y_min, other_y_min))
+            overlap_area = overlap_x * overlap_y
+            if overlap_area / area < 0.90:
+                continue
+
+            overlap_z = min(z_max, other_z_max) - max(z_min, other_z_min)
+            if overlap_z <= 0.0:
+                continue
+            if overlap_z / min(z_max - z_min, other_z_max - other_z_min) < 0.95:
+                continue
+
+            remove_indices.add(idx)
+            break
+
+    if len(remove_indices) == 0:
+        return mesh.copy()
+
+    kept_components = [component for idx, component in enumerate(components) if idx not in remove_indices]
+    if len(kept_components) == 0:
+        return trimesh.Trimesh()
+    return merge_meshes(kept_components, False)
+
+
+def prepare_mesh_for_ground_overlay(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    overlay_mesh = remove_redundant_ground_fill(mesh)
+    if len(overlay_mesh.vertices) == 0:
+        return overlay_mesh
+
+    overlay_mesh = overlay_mesh.copy()
+    below_floor = overlay_mesh.vertices[:, 2] < FLOOR_THICKNESS
+    overlay_mesh.vertices[below_floor, 2] = FLOOR_THICKNESS
+    return remove_redundant_contained_floor_slabs(overlay_mesh)
+
+
+def prepare_footprint_filter_source(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    source_mesh = normalize_ground_center(mesh)
+    if len(source_mesh.vertices) == 0:
+        return source_mesh
+
+    source_mesh = source_mesh.copy()
+    source_mesh.apply_translation([0.0, 0.0, OVERLAY_EPS])
+    return source_mesh
+
+
+def clean_curriculum_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    return remove_redundant_contained_floor_slabs(mesh)
+
+
+def merge_feature_with_flat_base(
+    feature_mesh: trimesh.Trimesh,
+    *,
+    min_width: float = MIN_TERRAIN_WIDTH,
+    min_length: float = MIN_TERRAIN_LENGTH,
+    side_padding: float = SIDE_PADDING,
+    end_padding: float = END_PADDING,
+) -> Tuple[trimesh.Trimesh, Dict[str, float]]:
     feature_mesh = normalize_ground_center(feature_mesh)
     feature_extents = feature_mesh.bounds[1] - feature_mesh.bounds[0]
-    base_width = max(MIN_TERRAIN_WIDTH, float(feature_extents[0]) + 2.0 * SIDE_PADDING)
-    base_length = max(MIN_TERRAIN_LENGTH, float(feature_extents[1]) + 2.0 * END_PADDING)
+    base_width = max(float(min_width), float(feature_extents[0]) + 2.0 * float(side_padding))
+    base_length = max(float(min_length), float(feature_extents[1]) + 2.0 * float(end_padding))
     base_mesh = build_flat_mesh(base_width, base_length)
-    lifted_feature = feature_mesh.copy()
-    lifted_feature.apply_translation([0.0, 0.0, OVERLAY_EPS])
-    mesh = merge_meshes([base_mesh, lifted_feature], False)
+    lifted_feature = prepare_mesh_for_ground_overlay(feature_mesh)
+    meshes = [base_mesh]
+    if len(lifted_feature.vertices) > 0:
+        lifted_feature.apply_translation([0.0, 0.0, OVERLAY_EPS])
+        meshes.append(lifted_feature)
+    mesh = clean_curriculum_mesh(merge_meshes(meshes, False))
     return mesh, {
         "base_width": round_float(base_width),
         "base_length": round_float(base_length),
         "feature_width": round_float(feature_extents[0]),
         "feature_length": round_float(feature_extents[1]),
     }
+
+
+def strip_part_walls(part):
+    if hasattr(part, "wall"):
+        part.wall = None
+    if hasattr(part, "wall_thickness"):
+        part.wall_thickness = 0.0
+    if hasattr(part, "wall_height"):
+        part.wall_height = 0.0
+    return part
 
 
 def build_linear_unused_area_filter_mesh(
@@ -550,31 +718,13 @@ def _course_footprint_mask_from_mesh(
     return _dilate_mask(keep_mask, FOOTPRINT_FILTER_DILATION_CELLS)
 
 
-def build_footprint_unused_area_filter_mesh(
-    mesh: trimesh.Trimesh,
+def _raster_filter_mesh_from_mask(
+    high_mask: np.ndarray,
     width: float,
     length: float,
     height: float,
-    keep_height_threshold: float = FLOOR_THICKNESS + 0.5 * OVERLAY_EPS,
 ) -> trimesh.Trimesh:
-    width = float(width)
-    length = float(length)
-    height = float(height)
-    if width <= 1.0e-6 or length <= 1.0e-6 or height <= 1.0e-6:
-        return trimesh.Trimesh()
-
-    source_mesh = normalize_ground_center(mesh)
-    cells_x, cells_y = _footprint_filter_grid_shape(width, length)
-    keep_mask = _course_footprint_mask_from_mesh(
-        source_mesh,
-        width,
-        length,
-        cells_x,
-        cells_y,
-        keep_height_threshold,
-    )
-    high_mask = ~keep_mask
-
+    cells_y, cells_x = high_mask.shape
     dx = width / float(cells_x)
     dy = length / float(cells_y)
     x_min = -0.5 * width
@@ -604,6 +754,275 @@ def build_footprint_unused_area_filter_mesh(
     if len(meshes) == 0:
         return trimesh.Trimesh()
     return merge_meshes(meshes, False)
+
+
+def _ring_area(points: np.ndarray) -> float:
+    return 0.5 * float(
+        np.dot(points[:, 0], np.roll(points[:, 1], -1))
+        - np.dot(points[:, 1], np.roll(points[:, 0], -1))
+    )
+
+
+def _open_rdp(points: np.ndarray, tolerance: float) -> np.ndarray:
+    if len(points) <= 2:
+        return points
+
+    start = points[0]
+    end = points[-1]
+    segment = end - start
+    segment_len = np.linalg.norm(segment)
+    if segment_len <= 1.0e-12:
+        distances = np.linalg.norm(points[1:-1] - start, axis=1)
+    else:
+        rel = points[1:-1] - start
+        distances = np.abs(segment[0] * rel[:, 1] - segment[1] * rel[:, 0]) / segment_len
+
+    if len(distances) == 0:
+        return points[[0, -1]]
+
+    max_idx = int(np.argmax(distances))
+    if distances[max_idx] <= tolerance:
+        return points[[0, -1]]
+
+    split_idx = max_idx + 1
+    first = _open_rdp(points[: split_idx + 1], tolerance)
+    second = _open_rdp(points[split_idx:], tolerance)
+    return np.vstack([first[:-1], second])
+
+
+def _simplify_closed_ring(points: np.ndarray, tolerance: float) -> np.ndarray:
+    if len(points) > 1 and np.allclose(points[0], points[-1]):
+        points = points[:-1]
+    if len(points) <= 4 or tolerance <= 0.0:
+        return points
+
+    start_idx = int(np.lexsort((points[:, 1], points[:, 0]))[0])
+    distances = np.linalg.norm(points - points[start_idx], axis=1)
+    opposite_idx = int(np.argmax(distances))
+    if opposite_idx == start_idx:
+        return points
+
+    if start_idx < opposite_idx:
+        first = points[start_idx : opposite_idx + 1]
+        second = np.vstack([points[opposite_idx:], points[: start_idx + 1]])
+    else:
+        first = np.vstack([points[start_idx:], points[: opposite_idx + 1]])
+        second = points[opposite_idx : start_idx + 1]
+
+    simplified = np.vstack(
+        [
+            _open_rdp(first, tolerance)[:-1],
+            _open_rdp(second, tolerance)[:-1],
+        ]
+    )
+    if len(simplified) < 3 or abs(_ring_area(simplified)) <= 1.0e-8:
+        return points
+    return simplified
+
+
+def _extrude_polygon_rings(rings: List[np.ndarray], height: float) -> trimesh.Trimesh:
+    try:
+        import mapbox_earcut as earcut
+    except ImportError:
+        return trimesh.Trimesh()
+
+    clean_rings = []
+    for ring in rings:
+        if len(ring) > 1 and np.allclose(ring[0], ring[-1]):
+            ring = ring[:-1]
+        if len(ring) >= 3 and abs(_ring_area(ring)) > 1.0e-8:
+            clean_rings.append(ring)
+    if len(clean_rings) == 0:
+        return trimesh.Trimesh()
+
+    vertices_2d = np.vstack(clean_rings).astype(np.float64)
+    ring_ends = np.cumsum([len(ring) for ring in clean_rings]).astype(np.uint32)
+    faces_2d = earcut.triangulate_float64(vertices_2d, ring_ends).reshape((-1, 3))
+    if len(faces_2d) == 0:
+        return trimesh.Trimesh()
+
+    bottom = np.column_stack([vertices_2d, np.zeros(len(vertices_2d))])
+    top = np.column_stack([vertices_2d, np.full(len(vertices_2d), float(height))])
+    vertices = np.vstack([bottom, top])
+    top_offset = len(vertices_2d)
+
+    faces = []
+    for face in faces_2d:
+        faces.append((top_offset + face).tolist())
+        faces.append(face[::-1].tolist())
+
+    ring_start = 0
+    for ring in clean_rings:
+        ring_len = len(ring)
+        for idx in range(ring_len):
+            a = ring_start + idx
+            b = ring_start + ((idx + 1) % ring_len)
+            faces.append([a, b, top_offset + b])
+            faces.append([a, top_offset + b, top_offset + a])
+        ring_start += ring_len
+
+    mesh = trimesh.Trimesh(vertices=vertices, faces=np.asarray(faces, dtype=np.int64), process=False)
+    trimesh.repair.fix_normals(mesh)
+    return mesh
+
+
+def _convex_hull_2d(points: np.ndarray) -> np.ndarray:
+    points = np.asarray(points, dtype=float)
+    if len(points) == 0:
+        return points.reshape(0, 2)
+    points = np.unique(np.round(points[:, :2], 10), axis=0)
+    if len(points) <= 2:
+        return points
+
+    order = np.lexsort((points[:, 1], points[:, 0]))
+    points = points[order]
+
+    def cross(origin: np.ndarray, point_a: np.ndarray, point_b: np.ndarray) -> float:
+        return float(
+            (point_a[0] - origin[0]) * (point_b[1] - origin[1])
+            - (point_a[1] - origin[1]) * (point_b[0] - origin[0])
+        )
+
+    lower: List[np.ndarray] = []
+    for point in points:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0.0:
+            lower.pop()
+        lower.append(point)
+
+    upper: List[np.ndarray] = []
+    for point in points[::-1]:
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0.0:
+            upper.pop()
+        upper.append(point)
+
+    return np.asarray(lower[:-1] + upper[:-1])
+
+
+def _component_is_low_course_wall(component: trimesh.Trimesh, target_height: float) -> bool:
+    if len(component.vertices) == 0:
+        return False
+
+    bounds = component.bounds
+    z_extent = float(bounds[1, 2] - bounds[0, 2])
+    z_max = float(bounds[1, 2])
+    if z_extent < 0.45:
+        return False
+    if z_max <= FLOOR_THICKNESS + 2.0 * OVERLAY_EPS:
+        return False
+    if z_max >= float(target_height) - 0.20:
+        return False
+
+    try:
+        extents = np.asarray(component.bounding_box_oriented.primitive.extents, dtype=float)
+        thin_extent = float(np.min(extents))
+    except Exception:
+        extents = bounds[1] - bounds[0]
+        thin_extent = float(np.min(extents))
+    return thin_extent <= 2.5 * WALL_THICKNESS
+
+
+def build_low_wall_footprint_cap_mesh(mesh: trimesh.Trimesh, height: float) -> trimesh.Trimesh:
+    height = float(height)
+    if len(mesh.vertices) == 0 or height <= 1.0e-6:
+        return trimesh.Trimesh()
+
+    cap_meshes = []
+    for component in mesh.split(only_watertight=False):
+        if not _component_is_low_course_wall(component, height):
+            continue
+
+        hull = _convex_hull_2d(component.vertices[:, :2])
+        if len(hull) < 3 or abs(_ring_area(hull)) <= 1.0e-8:
+            continue
+        cap_mesh = _extrude_polygon_rings([hull], height)
+        if len(cap_mesh.vertices) > 0:
+            cap_meshes.append(cap_mesh)
+
+    if len(cap_meshes) == 0:
+        return trimesh.Trimesh()
+    return merge_meshes(cap_meshes, False)
+
+
+def _vector_filter_mesh_from_mask(
+    high_mask: np.ndarray,
+    width: float,
+    length: float,
+    height: float,
+) -> trimesh.Trimesh:
+    try:
+        import contourpy
+    except ImportError:
+        return trimesh.Trimesh()
+
+    if not high_mask.any():
+        return trimesh.Trimesh()
+
+    cells_y, cells_x = high_mask.shape
+    dx = float(width) / float(cells_x)
+    dy = float(length) / float(cells_y)
+    x_min = -0.5 * float(width)
+    x_max = 0.5 * float(width)
+    y_min = -0.5 * float(length)
+    y_max = 0.5 * float(length)
+    xs = np.linspace(x_min + 0.5 * dx, x_max - 0.5 * dx, cells_x)
+    ys = np.linspace(y_min + 0.5 * dy, y_max - 0.5 * dy, cells_y)
+
+    contour_generator = contourpy.contour_generator(
+        x=xs,
+        y=ys,
+        z=high_mask.astype(float),
+        fill_type=contourpy.FillType.OuterOffset,
+    )
+    polygons, offsets = contour_generator.filled(0.5, 1.5)
+
+    tolerance = FOOTPRINT_FILTER_SIMPLIFY_CELLS * max(dx, dy)
+    meshes = []
+    for polygon, polygon_offsets in zip(polygons, offsets):
+        rings = []
+        for start, end in zip(polygon_offsets[:-1], polygon_offsets[1:]):
+            ring = polygon[int(start) : int(end)].copy()
+            ring[np.isclose(ring[:, 0], x_min + 0.5 * dx), 0] = x_min
+            ring[np.isclose(ring[:, 0], x_max - 0.5 * dx), 0] = x_max
+            ring[np.isclose(ring[:, 1], y_min + 0.5 * dy), 1] = y_min
+            ring[np.isclose(ring[:, 1], y_max - 0.5 * dy), 1] = y_max
+            rings.append(_simplify_closed_ring(ring, tolerance))
+        polygon_mesh = _extrude_polygon_rings(rings, height)
+        if len(polygon_mesh.vertices) > 0:
+            meshes.append(polygon_mesh)
+
+    if len(meshes) == 0:
+        return trimesh.Trimesh()
+    return merge_meshes(meshes, False)
+
+
+def build_footprint_unused_area_filter_mesh(
+    mesh: trimesh.Trimesh,
+    width: float,
+    length: float,
+    height: float,
+    keep_height_threshold: float = FLOOR_THICKNESS + 0.5 * OVERLAY_EPS,
+) -> trimesh.Trimesh:
+    width = float(width)
+    length = float(length)
+    height = float(height)
+    if width <= 1.0e-6 or length <= 1.0e-6 or height <= 1.0e-6:
+        return trimesh.Trimesh()
+
+    source_mesh = center_xy_preserve_z(mesh)
+    cells_x, cells_y = _footprint_filter_grid_shape(width, length)
+    keep_mask = _course_footprint_mask_from_mesh(
+        source_mesh,
+        width,
+        length,
+        cells_x,
+        cells_y,
+        keep_height_threshold,
+    )
+    high_mask = ~keep_mask
+    filter_mesh = _vector_filter_mesh_from_mask(high_mask, width, length, height)
+    if len(filter_mesh.vertices) > 0:
+        return filter_mesh
+    return _raster_filter_mesh_from_mask(high_mask, width, length, height)
 
 
 def build_arena_wall_mesh(
@@ -686,6 +1105,7 @@ def fit_mesh_to_dimensions(
     filter_unused_keepout_width: Optional[float] = None,
     filter_unused_keepout_length: Optional[float] = None,
     filter_unused_strategy: Optional[str] = None,
+    filter_source_mesh: Optional[trimesh.Trimesh] = None,
 ) -> trimesh.Trimesh:
     normalized = normalize_ground_center(mesh)
     extents = normalized.bounds[1] - normalized.bounds[0]
@@ -700,18 +1120,22 @@ def fit_mesh_to_dimensions(
     fitted_width = max(target_width, float(extents[0]))
     fitted_length = max(target_length, float(extents[1]))
     base_mesh = build_flat_mesh(fitted_width, fitted_length)
-    lifted = normalized.copy()
-    lifted.apply_translation([0.0, 0.0, OVERLAY_EPS])
+    lifted = prepare_mesh_for_ground_overlay(normalized)
+    if len(lifted.vertices) > 0:
+        lifted.apply_translation([0.0, 0.0, OVERLAY_EPS])
     meshes = [base_mesh]
+    wall_cap_mesh = trimesh.Trimesh()
     if filter_unused_area:
         filter_height = max(float(extents[2]), ARENA_WALL_HEIGHT) + OVERLAY_EPS
+        filter_source = normalized if filter_source_mesh is None else center_xy_preserve_z(filter_source_mesh)
         if filter_unused_strategy == "footprint":
             filter_mesh = build_footprint_unused_area_filter_mesh(
-                normalized,
+                filter_source,
                 fitted_width,
                 fitted_length,
                 filter_height,
             )
+            wall_cap_mesh = build_low_wall_footprint_cap_mesh(normalized, filter_height)
         elif filter_unused_keepout_width is not None and filter_unused_keepout_length is not None:
             filter_mesh = build_rectangular_unused_area_filter_mesh(
                 fitted_width,
@@ -726,11 +1150,14 @@ def fit_mesh_to_dimensions(
                 fitted_length,
                 float(filter_unused_outer_width) if filter_unused_outer_width is not None else float(extents[0]),
                 filter_height,
-            )
+        )
         if len(filter_mesh.vertices) > 0:
             meshes.append(filter_mesh)
-    meshes.append(lifted)
-    return merge_meshes(meshes, False)
+        if len(wall_cap_mesh.vertices) > 0:
+            meshes.append(wall_cap_mesh)
+    if len(lifted.vertices) > 0:
+        meshes.append(lifted)
+    return clean_curriculum_mesh(merge_meshes(meshes, False))
 
 
 def build_corner_loop_mesh_for_cell(
@@ -777,15 +1204,63 @@ def build_corner_loop_mesh_for_cell(
     )
     feature_mesh = normalize_ground_center(build_corner_loop_feature_mesh(corner_cfg, num_corners=num_corners))
     base_mesh = build_flat_mesh(width, length)
-    lifted_feature = feature_mesh.copy()
-    lifted_feature.apply_translation([0.0, 0.0, OVERLAY_EPS])
-    mesh = normalize_ground_center(merge_meshes([base_mesh, lifted_feature], False))
+    lifted_feature = prepare_mesh_for_ground_overlay(feature_mesh)
+    meshes = [base_mesh]
+    if len(lifted_feature.vertices) > 0:
+        lifted_feature.apply_translation([0.0, 0.0, OVERLAY_EPS])
+        meshes.append(lifted_feature)
+    mesh = normalize_ground_center(clean_curriculum_mesh(merge_meshes(meshes, False)))
     return mesh, {
         "loop_scale": round_float(scale),
         "pre_length": round_float(pre_length),
         "post_length": round_float(post_length),
         "loop_feature_extents": mesh_extents(feature_mesh),
     }
+
+
+def build_corner_loop_filter_source_mesh_for_cell(
+    *,
+    width: float,
+    length: float,
+    corridor_width: float,
+    pre_corridor_width: float,
+    post_corridor_width: float,
+    turn_angle_deg: float,
+    num_corners: int,
+    nominal_pre_length: float,
+    nominal_post_length: float,
+) -> trimesh.Trimesh:
+    scale = solve_corner_loop_scale_to_cell(
+        target_width=width,
+        target_length=length,
+        num_corners=num_corners,
+        pre_corridor_width=pre_corridor_width,
+        post_corridor_width=post_corridor_width,
+        turn_angle_deg=turn_angle_deg,
+        nominal_pre_length=nominal_pre_length,
+        nominal_post_length=nominal_post_length,
+        wall_thickness=WALL_THICKNESS,
+        margin=CORNER_LOOP_CELL_MARGIN,
+    )
+    pre_length = max(1.0e-3, float(nominal_pre_length) * scale)
+    post_length = max(1.0e-3, float(nominal_post_length) * scale)
+    corner_cfg = make_corner_cfg(
+        name="corner_loop_cell_filter_source",
+        corridor_width=corridor_width,
+        pre_corridor_width=pre_corridor_width,
+        post_corridor_width=post_corridor_width,
+        wall_thickness=0.0,
+        wall_height=0.0,
+        floor_thickness=FLOOR_THICKNESS,
+        structure_height=max(2.0, FLOOR_THICKNESS),
+        pre_length=pre_length,
+        post_length=post_length,
+        turn_angle_deg=turn_angle_deg,
+        cap_ends=False,
+        load_from_cache=False,
+    )
+    feature_mesh = build_corner_loop_feature_mesh(corner_cfg, num_corners=num_corners)
+    return prepare_footprint_filter_source(feature_mesh)
 
 
 def expand_terrain_to_cell(terrain: TerrainScene, target_width: float, target_length: float) -> TerrainScene:
@@ -834,14 +1309,31 @@ def expand_terrain_to_cell(terrain: TerrainScene, target_width: float, target_le
                 )
                 + OVERLAY_EPS
             )
+            filter_source_mesh = build_corner_loop_filter_source_mesh_for_cell(
+                width=target_width,
+                length=target_length,
+                corridor_width=float(expanded.metadata["corridor_width"]),
+                pre_corridor_width=float(expanded.metadata["pre_corridor_width"]),
+                post_corridor_width=float(expanded.metadata["post_corridor_width"]),
+                turn_angle_deg=float(expanded.metadata["turn_angle_deg"]),
+                num_corners=int(expanded.metadata["num_corners"]),
+                nominal_pre_length=nominal_pre_length,
+                nominal_post_length=nominal_post_length,
+            )
             filter_mesh = build_footprint_unused_area_filter_mesh(
-                expanded.mesh,
+                filter_source_mesh,
                 target_width,
                 target_length,
                 filter_height,
             )
+            wall_cap_mesh = build_low_wall_footprint_cap_mesh(expanded.mesh, filter_height)
+            filter_meshes = [expanded.mesh]
             if len(filter_mesh.vertices) > 0:
-                expanded.mesh = normalize_ground_center(merge_meshes([expanded.mesh, filter_mesh], False))
+                filter_meshes.append(filter_mesh)
+            if len(wall_cap_mesh.vertices) > 0:
+                filter_meshes.append(wall_cap_mesh)
+            if len(filter_meshes) > 1:
+                expanded.mesh = normalize_ground_center(merge_meshes(filter_meshes, False))
             filtered_unused_area = True
     else:
         filter_unused_area = bool(expanded.metadata.get("filter_unused_area", False))
@@ -849,6 +1341,7 @@ def expand_terrain_to_cell(terrain: TerrainScene, target_width: float, target_le
             expanded.mesh,
             target_width,
             target_length,
+            filter_source_mesh=expanded.filter_mesh,
             force_overlay=bool(expanded.metadata.get("fixed_max_height_across_levels", False)),
             filter_unused_area=filter_unused_area,
             filter_unused_outer_width=expanded.metadata.get("filter_unused_outer_width"),

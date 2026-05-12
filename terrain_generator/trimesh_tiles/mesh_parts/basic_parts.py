@@ -385,45 +385,46 @@ def create_corner_mesh(cfg: CornerMeshPartsCfg, **kwargs):
 
     meshes = [floor_mesh]
 
-    for side_sign in (-1.0, 1.0):
-        incoming_offset = side_sign * incoming_wall_offset * left_normal(incoming_dir)
-        outgoing_offset = side_sign * outgoing_wall_offset * left_normal(outgoing_dir)
-        incoming_start = incoming_offset - incoming_dir * cfg.pre_length
-        outgoing_end = outgoing_offset + outgoing_dir * cfg.post_length
+    if cfg.wall_thickness > 1.0e-6 and cfg.wall_height > 1.0e-6:
+        for side_sign in (-1.0, 1.0):
+            incoming_offset = side_sign * incoming_wall_offset * left_normal(incoming_dir)
+            outgoing_offset = side_sign * outgoing_wall_offset * left_normal(outgoing_dir)
+            incoming_start = incoming_offset - incoming_dir * cfg.pre_length
+            outgoing_end = outgoing_offset + outgoing_dir * cfg.post_length
 
-        half_thickness = cfg.wall_thickness / 2.0
-        incoming_normal = left_normal(incoming_dir)
-        outgoing_normal = left_normal(outgoing_dir)
-        outer_edge_join = line_intersection(
-            incoming_offset + incoming_normal * half_thickness,
-            incoming_dir,
-            outgoing_offset + outgoing_normal * half_thickness,
-            outgoing_dir,
-        )
-        inner_edge_join = line_intersection(
-            incoming_offset - incoming_normal * half_thickness,
-            incoming_dir,
-            outgoing_offset - outgoing_normal * half_thickness,
-            outgoing_dir,
-        )
+            half_thickness = cfg.wall_thickness / 2.0
+            incoming_normal = left_normal(incoming_dir)
+            outgoing_normal = left_normal(outgoing_dir)
+            outer_edge_join = line_intersection(
+                incoming_offset + incoming_normal * half_thickness,
+                incoming_dir,
+                outgoing_offset + outgoing_normal * half_thickness,
+                outgoing_dir,
+            )
+            inner_edge_join = line_intersection(
+                incoming_offset - incoming_normal * half_thickness,
+                incoming_dir,
+                outgoing_offset - outgoing_normal * half_thickness,
+                outgoing_dir,
+            )
 
-        wall_outline = np.array(
-            [
-                incoming_start + incoming_normal * half_thickness,
-                outer_edge_join,
-                outgoing_end + outgoing_normal * half_thickness,
-                outgoing_end - outgoing_normal * half_thickness,
-                inner_edge_join,
-                incoming_start - incoming_normal * half_thickness,
-            ]
-        )
-        wall_mesh = create_extruded_polygon(
-            wall_outline,
-            cfg.wall_height,
-            wall_z,
-            skip_side_edges=open_end_edges,
-        )
-        meshes.append(wall_mesh)
+            wall_outline = np.array(
+                [
+                    incoming_start + incoming_normal * half_thickness,
+                    outer_edge_join,
+                    outgoing_end + outgoing_normal * half_thickness,
+                    outgoing_end - outgoing_normal * half_thickness,
+                    inner_edge_join,
+                    incoming_start - incoming_normal * half_thickness,
+                ]
+            )
+            wall_mesh = create_extruded_polygon(
+                wall_outline,
+                cfg.wall_height,
+                wall_z,
+                skip_side_edges=open_end_edges,
+            )
+            meshes.append(wall_mesh)
 
     return merge_meshes(meshes, cfg.minimal_triangles)
 
